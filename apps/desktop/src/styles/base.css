@@ -1,0 +1,58 @@
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Sora:wght@500;600;700&display=swap');
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--gf-font-body);
+  color: var(--gf-color-ink);
+  background:
+    radial-gradient(circle at 7% 4%, rgba(30, 58, 138, 0.2) 0%, transparent 34%),
+    radial-gradient(circle at 92% 12%, rgba(15, 118, 110, 0.18) 0%, transparent 30%),
+    linear-gradient(180deg, #f8fbff 0%, #eef2f9 100%);
+}
+
+h1,
+h2,
+h3,
+h4 {
+  margin: 0;
+  font-family: var(--gf-font-title);
+  letter-spacing: -0.01em;
+}
+
+p {
+  margin: 0;
+  line-height: 1.5;
+}
+
+input,
+select,
+button,
+textarea {
+  font: inherit;
+}
+
+:focus-visible {
+  outline: 3px solid rgba(30, 58, 138, 0.35);
+  outline-offset: 1px;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.66;
+}

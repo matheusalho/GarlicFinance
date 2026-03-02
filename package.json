@@ -1,0 +1,14 @@
+{
+  "name": "garlic-finance",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "npm --workspace apps/desktop run dev",
+    "build": "npm --workspace apps/desktop run build",
+    "lint": "npm --workspace apps/desktop run lint",
+    "typecheck": "npm --workspace apps/desktop run typecheck"
+  }
+}

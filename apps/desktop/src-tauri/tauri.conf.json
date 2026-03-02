@@ -1,0 +1,33 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "GarlicFinance",
+  "version": "0.1.0",
+  "identifier": "com.garlicfinance.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:5173"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "GarlicFinance",
+        "width": 1440,
+        "height": 960,
+        "minWidth": 1100,
+        "minHeight": 760,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "msi",
+    "shortDescription": "Controle financeiro pessoal",
+    "longDescription": "Aplicativo desktop para controle financeiro pessoal com importação automática de OFX/XLS/XLSX."
+  }
+}

@@ -1,0 +1,32 @@
+:root {
+  --gf-color-bg: #f5f7fb;
+  --gf-color-surface: #ffffff;
+  --gf-color-surface-alt: #eef3fb;
+  --gf-color-border: #d8e1ef;
+  --gf-color-ink: #0f1f33;
+  --gf-color-muted: #52627a;
+  --gf-color-brand: #1e3a8a;
+  --gf-color-brand-alt: #0f766e;
+  --gf-color-accent: #c2410c;
+  --gf-color-success: #0f766e;
+  --gf-color-danger: #b91c1c;
+  --gf-color-warning: #b45309;
+
+  --gf-space-1: 0.25rem;
+  --gf-space-2: 0.5rem;
+  --gf-space-3: 0.75rem;
+  --gf-space-4: 1rem;
+  --gf-space-5: 1.25rem;
+  --gf-space-6: 1.5rem;
+  --gf-space-8: 2rem;
+
+  --gf-radius-sm: 10px;
+  --gf-radius-md: 16px;
+  --gf-radius-lg: 22px;
+
+  --gf-shadow-1: 0 10px 24px rgba(15, 23, 42, 0.08);
+  --gf-shadow-2: 0 24px 60px rgba(15, 23, 42, 0.12);
+
+  --gf-font-title: 'Sora', 'Segoe UI', sans-serif;
+  --gf-font-body: 'Manrope', 'Segoe UI', sans-serif;
+}

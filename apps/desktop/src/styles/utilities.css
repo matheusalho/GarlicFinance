@@ -1,0 +1,7 @@
+.gf-muted {
+  color: var(--gf-color-muted);
+}
+
+.gf-hidden {
+  display: none !important;
+}
