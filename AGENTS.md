@@ -755,3 +755,31 @@ Decisao:
 
 Proximo passo unico:
 - Rodar novamente o gate completo de publicacao GA (incluindo `smoke:e2e:v16`, `pytest` e `tauri:build`) e publicar a release remota com tag `v1.0.0`.
+
+## Atualizacao de Sessao (2026-03-04 - Gate GA rerun + publicacao remota v1.0.0)
+
+- [x] Gate completo de publicacao GA reexecutado com sucesso em ambiente limpo:
+  - `npm ci`
+  - `npm --workspace apps/desktop run typecheck`
+  - `npm --workspace apps/desktop run lint`
+  - `npm --workspace apps/desktop run test`
+  - `npm --workspace apps/desktop run build`
+  - `npm --workspace apps/desktop run security:check:rc`
+  - `npm --workspace apps/desktop run smoke:e2e:v16`
+  - `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml`
+  - `pytest services/importer/tests -q`
+  - `npm --workspace apps/desktop run tauri:build`
+- [x] Evidencias de execucao:
+  - smoke V1.6: `output/playwright/v16-smoke/2026-03-04T22-28-37-046Z`
+  - MSI: `apps/desktop/src-tauri/target/release/bundle/msi/GarlicFinance_1.0.0_x64_en-US.msi`
+  - SHA256 MSI: `5985CCEDE1C6B26BADC16A33A67FF318C17CBEF4E04D38BCEC9919965F1B3987`
+- [x] Publicacao remota executada:
+  - commit: `0c77510` (`release: publish Garlic Finance v1.0.0 GA`)
+  - push para `origin/main`
+  - tag anotada criada e enviada: `v1.0.0`
+
+Decisao:
+- Considerar a publicacao remota da `v1.0.0` concluida em nivel de Git (branch principal + tag de release), com gate tecnico completo validado imediatamente antes do push.
+
+Proximo passo unico:
+- Publicar/atualizar a GitHub Release da tag `v1.0.0` com as notas finais e anexar o MSI gerado como asset de distribuicao.
