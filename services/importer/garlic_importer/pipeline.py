@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 from datetime import datetime
@@ -29,9 +29,13 @@ SOURCE_DIRS = {
     "btg_card_encrypted_xlsx": "CartaoBTG",
 }
 
-OWN_NAME_HINTS = [
-    "matheus gasparino alho",
-]
+INTERNAL_TRANSFER_HINTS = (
+    "mesma titularidade",
+    "entre contas",
+    "conta de mesma titularidade",
+    "transferencia interna",
+    "transferencia entre contas",
+)
 
 
 def scan_candidates(base_path: Path) -> list[dict[str, Any]]:
@@ -287,8 +291,8 @@ def _parse_btg_card_transactions(file_path: Path, file_hash: str, btg_password: 
     return output
 
 
-def _contains_own_name(text_folded: str) -> bool:
-    return any(name in text_folded for name in OWN_NAME_HINTS)
+def _looks_like_internal_transfer(text_folded: str) -> bool:
+    return any(hint in text_folded for hint in INTERNAL_TRANSFER_HINTS)
 
 
 def _classify_nubank_card_flow(amount_cents: int, memo_folded: str) -> str:
@@ -302,9 +306,7 @@ def _classify_nubank_card_flow(amount_cents: int, memo_folded: str) -> str:
 def _classify_nubank_checking_flow(amount_cents: int, memo_folded: str) -> str:
     if "pagamento de fatura" in memo_folded:
         return "credit_card_payment"
-    if any(keyword in memo_folded for keyword in ["pix", "transferencia", "transferência"]) and _contains_own_name(
-        memo_folded
-    ):
+    if any(keyword in memo_folded for keyword in ["pix", "transferencia"]) and _looks_like_internal_transfer(memo_folded):
         return "transfer"
     return "income" if amount_cents >= 0 else "expense"
 
@@ -317,7 +319,7 @@ def _classify_btg_checking_flow(amount_cents: int, description: str, tx_type: st
         return "balance_snapshot"
     if "pagamento de fatura do cartao" in tx_type_folded:
         return "credit_card_payment"
-    if "pix" in tx_type_folded and _contains_own_name(fold_text(description)):
+    if "pix" in tx_type_folded and (_looks_like_internal_transfer(tx_type_folded) or _looks_like_internal_transfer(description_folded)):
         return "transfer"
     return "income" if amount_cents >= 0 else "expense"
 

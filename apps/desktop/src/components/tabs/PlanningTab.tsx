@@ -1,17 +1,37 @@
+import { useState } from 'react'
 import type { FormEvent } from 'react'
 
 import { brl } from '../../lib/format'
-import type { GoalListItem, ProjectionResponse, RecurringTemplateItem, SubcategoryItem } from '../../types'
+import type {
+  GoalListItem,
+  MonthlyBudgetSummaryResponse,
+  ProjectionResponse,
+  ProjectionScenario,
+  RecurringTemplateItem,
+  SubcategoryItem,
+} from '../../types'
 
 interface CategoryOption {
   id: string
   label: string
 }
 
-type ProjectionScenario = 'base' | 'optimistic' | 'pessimistic'
 type ManualFlow = 'income' | 'expense'
 type GoalHorizon = 'short' | 'medium' | 'long'
 type RecurringDirection = 'income' | 'expense'
+type PlanningSection = 'extra' | 'recurring' | 'budget' | 'goals' | 'projection'
+
+const SCENARIO_LABELS: Record<ProjectionScenario, string> = {
+  base: 'Base',
+  optimistic: 'Otimista',
+  pessimistic: 'Pessimista',
+}
+
+const BUDGET_ALERT_LABELS: Record<'ok' | 'warning' | 'exceeded', string> = {
+  ok: 'No limite',
+  warning: 'Atenção',
+  exceeded: 'Estourado',
+}
 
 interface PlanningTabProps {
   manualDate: string
@@ -49,19 +69,34 @@ interface PlanningTabProps {
   goalDate: string
   goalHorizon: GoalHorizon
   goalAllocation: string
+  budgetMonth: string
+  budgetCategory: string
+  budgetSubcategory: string
+  budgetLimit: string
   onGoalNameChange: (value: string) => void
   onGoalTargetChange: (value: string) => void
   onGoalCurrentChange: (value: string) => void
   onGoalDateChange: (value: string) => void
   onGoalHorizonChange: (value: GoalHorizon) => void
   onGoalAllocationChange: (value: string) => void
+  onBudgetMonthChange: (value: string) => void
+  onBudgetCategoryChange: (value: string) => void
+  onBudgetSubcategoryChange: (value: string) => void
+  onBudgetLimitChange: (value: string) => void
+  onSaveBudget: (event: FormEvent) => void
+  onDeleteBudget: (budgetId: number) => void
   onSaveGoal: (event: FormEvent) => void
+  goalScenarioAllocationValue: (goalId: number, scenario: ProjectionScenario) => string
+  onGoalScenarioAllocationChange: (goalId: number, scenario: ProjectionScenario, value: string) => void
+  onSaveGoalScenarioAllocations: (goalId: number) => void
   goals: GoalListItem[]
+  monthlyBudgetSummary: MonthlyBudgetSummaryResponse | null
   projection: ProjectionResponse | null
   onRunProjection: (scenario: ProjectionScenario) => void
   categoryOptions: CategoryOption[]
   subcategoriesByCategory: Record<string, SubcategoryItem[]>
   mode: 'simple' | 'advanced'
+  sectionHint?: PlanningSection
 }
 
 export function PlanningTab({
@@ -100,24 +135,68 @@ export function PlanningTab({
   goalDate,
   goalHorizon,
   goalAllocation,
+  budgetMonth,
+  budgetCategory,
+  budgetSubcategory,
+  budgetLimit,
   onGoalNameChange,
   onGoalTargetChange,
   onGoalCurrentChange,
   onGoalDateChange,
   onGoalHorizonChange,
   onGoalAllocationChange,
+  onBudgetMonthChange,
+  onBudgetCategoryChange,
+  onBudgetSubcategoryChange,
+  onBudgetLimitChange,
+  onSaveBudget,
+  onDeleteBudget,
   onSaveGoal,
+  goalScenarioAllocationValue,
+  onGoalScenarioAllocationChange,
+  onSaveGoalScenarioAllocations,
   goals,
+  monthlyBudgetSummary,
   projection,
   onRunProjection,
   categoryOptions,
   subcategoriesByCategory,
   mode,
+  sectionHint,
 }: PlanningTabProps) {
+  const [activeSection, setActiveSection] = useState<PlanningSection>(sectionHint ?? 'extra')
+
   return (
     <div className="gf-stack">
-      <section className="gf-grid gf-grid-2">
-        <article className="gf-card">
+      <section className="gf-card">
+        <header className="gf-section-header">
+          <div>
+            <h3>Planejamento financeiro</h3>
+            <p>Selecione um quadro para expandir e editar sem rolagem longa.</p>
+          </div>
+        </header>
+
+        <div className="gf-segmented">
+          <button type="button" className={activeSection === 'extra' ? 'active' : ''} onClick={() => setActiveSection('extra')}>
+            Extraordinários
+          </button>
+          <button type="button" className={activeSection === 'recurring' ? 'active' : ''} onClick={() => setActiveSection('recurring')}>
+            Recorrências
+          </button>
+          <button type="button" className={activeSection === 'budget' ? 'active' : ''} onClick={() => setActiveSection('budget')}>
+            Orçamento
+          </button>
+          <button type="button" className={activeSection === 'goals' ? 'active' : ''} onClick={() => setActiveSection('goals')}>
+            Objetivos
+          </button>
+          <button type="button" className={activeSection === 'projection' ? 'active' : ''} onClick={() => setActiveSection('projection')}>
+            Projeções
+          </button>
+        </div>
+      </section>
+
+      {activeSection === 'extra' && (
+        <section className="gf-card">
           <header className="gf-section-header">
             <div>
               <h3>Extraordinários</h3>
@@ -169,13 +248,13 @@ export function PlanningTab({
                 </select>
               </label>
             </div>
-            <button type="submit" className="gf-button">
-              Adicionar lançamento
-            </button>
+            <button type="submit" className="gf-button">Adicionar lançamento</button>
           </form>
-        </article>
+        </section>
+      )}
 
-        <article className="gf-card">
+      {activeSection === 'recurring' && (
+        <section className="gf-card">
           <header className="gf-section-header">
             <div>
               <h3>Recorrências</h3>
@@ -190,10 +269,7 @@ export function PlanningTab({
             <div className="gf-inline-grid gf-inline-grid-3">
               <label className="gf-field">
                 Direção
-                <select
-                  value={recurringDirection}
-                  onChange={(event) => onRecurringDirectionChange(event.target.value as RecurringDirection)}
-                >
+                <select value={recurringDirection} onChange={(event) => onRecurringDirectionChange(event.target.value as RecurringDirection)}>
                   <option value="expense">Despesa</option>
                   <option value="income">Receita</option>
                 </select>
@@ -210,11 +286,7 @@ export function PlanningTab({
             <div className="gf-inline-grid gf-inline-grid-3">
               <label className="gf-field">
                 Início
-                <input
-                  type="date"
-                  value={recurringStartDate}
-                  onChange={(event) => onRecurringStartDateChange(event.target.value)}
-                />
+                <input type="date" value={recurringStartDate} onChange={(event) => onRecurringStartDateChange(event.target.value)} />
               </label>
               <label className="gf-field">
                 Categoria
@@ -228,10 +300,7 @@ export function PlanningTab({
               </label>
               <label className="gf-field">
                 Subcategoria
-                <select
-                  value={recurringSubcategory}
-                  onChange={(event) => onRecurringSubcategoryChange(event.target.value)}
-                >
+                <select value={recurringSubcategory} onChange={(event) => onRecurringSubcategoryChange(event.target.value)}>
                   <option value="">Sem subcategoria</option>
                   {(subcategoriesByCategory[recurringCategory] ?? []).map((sub) => (
                     <option key={sub.id} value={sub.id}>
@@ -241,27 +310,109 @@ export function PlanningTab({
                 </select>
               </label>
             </div>
-            <button type="submit" className="gf-button">
-              Salvar recorrência
-            </button>
+            <button type="submit" className="gf-button">Salvar recorrência</button>
           </form>
 
           <ul className="gf-list">
             {recurringTemplates.slice(0, mode === 'advanced' ? 10 : 6).map((item) => (
               <li key={item.id}>
-                <span>
-                  {item.name} · dia {item.dayOfMonth}
-                </span>
+                <span>{item.name} · dia {item.dayOfMonth}</span>
                 <strong>{brl(item.amountCents)}</strong>
               </li>
             ))}
             {recurringTemplates.length === 0 && <li className="gf-empty-inline">Sem recorrências cadastradas.</li>}
           </ul>
-        </article>
-      </section>
+        </section>
+      )}
 
-      <section className="gf-grid gf-grid-2">
-        <article className="gf-card">
+      {activeSection === 'budget' && (
+        <section className="gf-card">
+          <header className="gf-section-header">
+            <div>
+              <h3>Orçamento mensal</h3>
+              <p>Defina limites por categoria/subcategoria e acompanhe alertas de consumo.</p>
+            </div>
+            {monthlyBudgetSummary && (
+              <span className={`gf-pill gf-pill-${monthlyBudgetSummary.alertLevel}`}>
+                {BUDGET_ALERT_LABELS[monthlyBudgetSummary.alertLevel]} · {monthlyBudgetSummary.usagePercent.toFixed(1)}%
+              </span>
+            )}
+          </header>
+
+          <form className="gf-form" onSubmit={onSaveBudget}>
+            <div className="gf-inline-grid gf-inline-grid-3">
+              <label className="gf-field">
+                Mês
+                <input type="month" value={budgetMonth} onChange={(event) => onBudgetMonthChange(event.target.value)} />
+              </label>
+              <label className="gf-field">
+                Categoria
+                <select value={budgetCategory} onChange={(event) => onBudgetCategoryChange(event.target.value)}>
+                  {categoryOptions.map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="gf-field">
+                Subcategoria
+                <select value={budgetSubcategory} onChange={(event) => onBudgetSubcategoryChange(event.target.value)}>
+                  <option value="">Todas da categoria</option>
+                  {(subcategoriesByCategory[budgetCategory] ?? []).map((subcategory) => (
+                    <option key={subcategory.id} value={subcategory.id}>
+                      {subcategory.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <div className="gf-inline-grid gf-inline-grid-2">
+              <label className="gf-field">
+                Limite mensal (R$)
+                <input value={budgetLimit} onChange={(event) => onBudgetLimitChange(event.target.value)} placeholder="Ex: 1200" />
+              </label>
+              <div className="gf-inline-actions">
+                <button type="submit" className="gf-button">Salvar orçamento</button>
+              </div>
+            </div>
+          </form>
+
+          <ul className="gf-list">
+            {(monthlyBudgetSummary?.items ?? []).map((item) => (
+              <li key={item.id} className="gf-list-stacked">
+                <div className="gf-list-head">
+                  <strong>
+                    {item.categoryName}
+                    {item.subcategoryName ? ` / ${item.subcategoryName}` : ''}
+                  </strong>
+                  <span className={`gf-pill gf-pill-${item.alertLevel}`}>{BUDGET_ALERT_LABELS[item.alertLevel]}</span>
+                </div>
+                <small>
+                  {item.month} · gasto {brl(item.spentCents)} de {brl(item.limitCents)} ({item.usagePercent.toFixed(1)}%)
+                </small>
+                <div className="gf-progress">
+                  <span style={{ width: `${Math.min(100, Math.max(0, item.usagePercent))}%` }} />
+                </div>
+                <div className="gf-inline-actions">
+                  <span className={item.remainingCents < 0 ? 'neg' : 'pos'}>
+                    Restante: {brl(item.remainingCents)}
+                  </span>
+                  <button type="button" className="gf-button ghost" onClick={() => onDeleteBudget(item.id)}>
+                    Remover
+                  </button>
+                </div>
+              </li>
+            ))}
+            {(monthlyBudgetSummary?.items.length ?? 0) === 0 && (
+              <li className="gf-empty-inline">Nenhum orçamento definido para o mês selecionado.</li>
+            )}
+          </ul>
+        </section>
+      )}
+
+      {activeSection === 'goals' && (
+        <section className="gf-card">
           <header className="gf-section-header">
             <div>
               <h3>Objetivos</h3>
@@ -301,9 +452,7 @@ export function PlanningTab({
                 <input value={goalAllocation} onChange={(event) => onGoalAllocationChange(event.target.value)} />
               </label>
             </div>
-            <button type="submit" className="gf-button">
-              Salvar objetivo
-            </button>
+            <button type="submit" className="gf-button">Salvar objetivo</button>
           </form>
 
           <ul className="gf-list">
@@ -315,20 +464,42 @@ export function PlanningTab({
                     <strong>{goal.name}</strong>
                     <span>{goal.horizon}</span>
                   </div>
-                  <small>
-                    {brl(goal.currentCents)} / {brl(goal.targetCents)} até {goal.targetDate}
-                  </small>
+                  <small>{brl(goal.currentCents)} / {brl(goal.targetCents)} até {goal.targetDate}</small>
                   <div className="gf-progress">
                     <span style={{ width: `${progress}%` }} />
+                  </div>
+                  <div className="gf-inline-grid gf-inline-grid-3">
+                    {(['base', 'optimistic', 'pessimistic'] as ProjectionScenario[]).map((scenario) => (
+                      <label key={`${goal.id}-${scenario}`} className="gf-field">
+                        {SCENARIO_LABELS[scenario]} (%)
+                        <input
+                          value={goalScenarioAllocationValue(goal.id, scenario)}
+                          onChange={(event) =>
+                            onGoalScenarioAllocationChange(goal.id, scenario, event.target.value)
+                          }
+                        />
+                      </label>
+                    ))}
+                  </div>
+                  <div className="gf-inline-actions">
+                    <button
+                      type="button"
+                      className="gf-button ghost"
+                      onClick={() => onSaveGoalScenarioAllocations(goal.id)}
+                    >
+                      Salvar cenários
+                    </button>
                   </div>
                 </li>
               )
             })}
             {goals.length === 0 && <li className="gf-empty-inline">Sem objetivos cadastrados.</li>}
           </ul>
-        </article>
+        </section>
+      )}
 
-        <article className="gf-card">
+      {activeSection === 'projection' && (
+        <section className="gf-card">
           <header className="gf-section-header">
             <div>
               <h3>Projeções</h3>
@@ -336,22 +507,14 @@ export function PlanningTab({
             </div>
           </header>
           <div className="gf-inline-actions">
-            <button type="button" className="gf-button" onClick={() => onRunProjection('base')}>
-              Base
-            </button>
-            <button type="button" className="gf-button secondary" onClick={() => onRunProjection('optimistic')}>
-              Otimista
-            </button>
-            <button type="button" className="gf-button ghost" onClick={() => onRunProjection('pessimistic')}>
-              Pessimista
-            </button>
+            <button type="button" className="gf-button" onClick={() => onRunProjection('base')}>Base</button>
+            <button type="button" className="gf-button secondary" onClick={() => onRunProjection('optimistic')}>Otimista</button>
+            <button type="button" className="gf-button ghost" onClick={() => onRunProjection('pessimistic')}>Pessimista</button>
           </div>
           <ul className="gf-list">
-            {(projection?.monthlyProjection ?? []).slice(0, 12).map((month) => (
+            {(projection?.monthlyProjection ?? []).slice(0, mode === 'advanced' ? 14 : 8).map((month) => (
               <li key={month.month}>
-                <span>
-                  {month.month} · {brl(month.netCents)}
-                </span>
+                <span>{month.month} · {brl(month.netCents)}</span>
                 <strong>{brl(month.balanceCents)}</strong>
               </li>
             ))}
@@ -359,8 +522,8 @@ export function PlanningTab({
               <li className="gf-empty-inline">Nenhuma projeção calculada.</li>
             )}
           </ul>
-        </article>
-      </section>
+        </section>
+      )}
     </div>
   )
 }

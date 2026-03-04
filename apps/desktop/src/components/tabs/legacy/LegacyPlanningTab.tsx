@@ -1,17 +1,28 @@
 ﻿import type { FormEvent } from 'react'
 
 import { brl } from '../../../lib/format'
-import type { GoalListItem, ProjectionResponse, RecurringTemplateItem, SubcategoryItem } from '../../../types'
+import type {
+  GoalListItem,
+  ProjectionResponse,
+  ProjectionScenario,
+  RecurringTemplateItem,
+  SubcategoryItem,
+} from '../../../types'
 
 interface CategoryOption {
   id: string
   label: string
 }
 
-type ProjectionScenario = 'base' | 'optimistic' | 'pessimistic'
 type ManualFlow = 'income' | 'expense'
 type GoalHorizon = 'short' | 'medium' | 'long'
 type RecurringDirection = 'income' | 'expense'
+
+const SCENARIO_LABELS: Record<ProjectionScenario, string> = {
+  base: 'Base',
+  optimistic: 'Otimista',
+  pessimistic: 'Pessimista',
+}
 
 interface PlanningTabProps {
   manualDate: string
@@ -56,6 +67,9 @@ interface PlanningTabProps {
   onGoalHorizonChange: (value: GoalHorizon) => void
   onGoalAllocationChange: (value: string) => void
   onSaveGoal: (event: FormEvent) => void
+  goalScenarioAllocationValue: (goalId: number, scenario: ProjectionScenario) => string
+  onGoalScenarioAllocationChange: (goalId: number, scenario: ProjectionScenario, value: string) => void
+  onSaveGoalScenarioAllocations: (goalId: number) => void
   goals: GoalListItem[]
   projection: ProjectionResponse | null
   onRunProjection: (scenario: ProjectionScenario) => void
@@ -106,6 +120,9 @@ export function LegacyPlanningTab({
   onGoalHorizonChange,
   onGoalAllocationChange,
   onSaveGoal,
+  goalScenarioAllocationValue,
+  onGoalScenarioAllocationChange,
+  onSaveGoalScenarioAllocations,
   goals,
   projection,
   onRunProjection,
@@ -290,6 +307,22 @@ export function LegacyPlanningTab({
                   <p>
                     {brl(goal.currentCents)} / {brl(goal.targetCents)} até {goal.targetDate}
                   </p>
+                  <div className="inline-fields">
+                    {(['base', 'optimistic', 'pessimistic'] as ProjectionScenario[]).map((scenario) => (
+                      <label key={`${goal.id}-${scenario}`} className="field">
+                        {SCENARIO_LABELS[scenario]} (%)
+                        <input
+                          value={goalScenarioAllocationValue(goal.id, scenario)}
+                          onChange={(event) =>
+                            onGoalScenarioAllocationChange(goal.id, scenario, event.target.value)
+                          }
+                        />
+                      </label>
+                    ))}
+                  </div>
+                  <button type="button" className="ghost" onClick={() => onSaveGoalScenarioAllocations(goal.id)}>
+                    Salvar cenários
+                  </button>
                 </div>
                 <span>{goal.horizon}</span>
               </li>

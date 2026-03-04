@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import hashlib
 import re
@@ -64,11 +64,42 @@ def parse_amount_to_cents(raw_amount: str | float | int) -> int:
     if not value:
         return 0
 
-    value = value.replace(".", "").replace(",", ".") if "," in value and "." in value else value
+    value = re.sub(r"[^\d,.\-+]", "", value)
+    if not value:
+        return 0
+
+    sign = ""
+    if value[0] in "+-":
+        sign = value[0]
+        value = value[1:]
+
+    decimal_sep: str | None = None
+    comma_pos = value.rfind(",")
+    dot_pos = value.rfind(".")
+
+    if comma_pos >= 0 and dot_pos >= 0:
+        decimal_sep = "," if comma_pos > dot_pos else "."
+    elif comma_pos >= 0:
+        fractional_len = len(value) - comma_pos - 1
+        if fractional_len in (1, 2):
+            decimal_sep = ","
+    elif dot_pos >= 0:
+        fractional_len = len(value) - dot_pos - 1
+        if fractional_len in (1, 2):
+            decimal_sep = "."
+
+    if decimal_sep is None:
+        value = value.replace(",", "").replace(".", "")
+    elif decimal_sep == ",":
+        value = value.replace(".", "").replace(",", ".")
+    else:
+        value = value.replace(",", "")
+
+    normalized = f"{sign}{value}"
     try:
-        return int(round(float(value) * 100))
+        return int(round(float(normalized) * 100))
     except ValueError as exc:
-        raise ValueError(f"Valor inválido: {raw_amount}") from exc
+        raise ValueError(f"Valor invalido: {raw_amount}") from exc
 
 
 def fingerprint(parts: list[str]) -> str:
@@ -86,7 +117,7 @@ def parse_ofx_datetime(raw_value: str) -> datetime:
         return datetime.strptime(clean[:14], "%Y%m%d%H%M%S")
     if len(clean) >= 8:
         return datetime.strptime(clean[:8], "%Y%m%d")
-    raise ValueError(f"Data OFX inválida: {raw_value}")
+    raise ValueError(f"Data OFX invalida: {raw_value}")
 
 
 def parse_br_datetime(raw_value: str) -> datetime:
@@ -108,4 +139,3 @@ def is_datetime_br(raw_value: str) -> bool:
 
 def is_iso_date_prefix(raw_value: str) -> bool:
     return bool(DATE_ISO_RE.match(normalize_space(raw_value)))
-

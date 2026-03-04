@@ -9,28 +9,38 @@ use tauri::State;
 
 use crate::db;
 use crate::models::{
-    CategoryBreakdown, CategoryTreeItem, CategoryUpsertInput, CategoryUpsertResponse,
-    DashboardInput, DashboardKpis, DashboardSeriesPoint, DashboardSummaryResponse, GoalInput,
-    GoalListItem, GoalProjectionProgress, GoalUpsertResponse, ImportRunResponse,
-    ImportScanResponse, ImporterParseOutput, ImporterScanOutput, ManualTransactionInput,
-    ManualTransactionResponse, ProjectionInput, ProjectionMonth, ProjectionResponse,
-    RecurringTemplateInput, RecurringTemplateItem, RecurringTemplateResponse, RuleUpsertInput,
-    RuleUpsertResponse, SettingsAutoImportResponse, SettingsAutoImportSetInput,
-    SettingsFeatureFlagsResponse, SettingsFeatureFlagsSetInput, SettingsOnboardingResponse,
-    SettingsOnboardingSetInput, SettingsPasswordSetInput, SettingsPasswordTestInput,
-    SettingsPasswordTestResponse, SettingsSimpleResponse, SettingsUiPreferencesResponse,
-    SettingsUiPreferencesSetInput, SubcategoryUpsertInput, SubcategoryUpsertResponse,
-    TransactionsFilters, TransactionsListResponse, UpdateCategoryInput, UpdatedCountResponse,
+    BudgetUpsertInput, BudgetUpsertResponse, CategoryBreakdown, CategoryTreeItem, CategoryUpsertInput,
+    CategoryUpsertResponse, DashboardInput, DashboardKpis, DashboardSeriesPoint,
+    DashboardSummaryResponse, GoalAllocationInput, GoalAllocationItem, GoalAllocationUpsertResponse,
+    GoalInput, GoalListItem, GoalProjectionProgress, GoalUpsertResponse, ImportRunResponse,
+    ImportScanResponse, ImporterParseOutput, ImporterScanOutput, ManualBalanceSnapshotInput,
+    ManualBalanceSnapshotResponse, ManualTransactionInput, ManualTransactionResponse,
+    MonthlyBudgetSummaryResponse, ObservabilityEventItem, ObservabilityLogEventInput,
+    ProjectionInput, ProjectionMonth, ProjectionResponse, ReconciliationAccountItem,
+    ReconciliationInput, ReconciliationSummaryResponse,
+    RecurringTemplateInput, RecurringTemplateItem, RecurringTemplateResponse, RuleDryRunItem,
+    RuleListItem, RuleUpsertInput, RuleUpsertResponse, RulesDryRunResponse,
+    SettingsAutoImportResponse, SettingsAutoImportSetInput, SettingsFeatureFlagsResponse,
+    SettingsFeatureFlagsSetInput, SettingsOnboardingResponse, SettingsOnboardingSetInput,
+    SettingsPasswordSetInput, SettingsPasswordTestInput, SettingsPasswordTestResponse,
+    SettingsSimpleResponse, SettingsUiPreferencesResponse, SettingsUiPreferencesSetInput,
+    SubcategoryUpsertInput, SubcategoryUpsertResponse, TransactionsFilters,
+    TransactionsListResponse, TransactionsReviewQueueResponse, UpdateCategoryInput,
+    UpdatedCountResponse,
 };
+
+const SUPPORTED_SCENARIOS: [&str; 3] = ["base", "optimistic", "pessimistic"];
 
 pub struct AppState {
     pub importer_script: PathBuf,
+    pub importer_sidecar: Option<PathBuf>,
 }
 
 impl AppState {
     pub fn new() -> Self {
         Self {
             importer_script: db::importer_script_path(),
+            importer_sidecar: db::importer_sidecar_path(),
         }
     }
 }
@@ -40,8 +50,7 @@ pub fn import_scan(
     state: State<AppState>,
     base_path: String,
 ) -> Result<ImportScanResponse, String> {
-    let output =
-        run_importer_scan(&state.importer_script, &base_path).map_err(|err| err.to_string())?;
+    let output = run_importer_scan(&state, &base_path).map_err(|err| err.to_string())?;
     Ok(ImportScanResponse {
         candidates: output.candidates,
     })
@@ -60,8 +69,8 @@ pub fn import_run(
     let btg_password = read_provider_password("btg")
         .map_err(|err| err.to_string())?
         .unwrap_or_default();
-    let parsed = run_importer_parse(&state.importer_script, &base_path, &btg_password)
-        .map_err(|err| err.to_string())?;
+    let parsed =
+        run_importer_parse(&state, &base_path, &btg_password).map_err(|err| err.to_string())?;
 
     db::backup_database().map_err(|err| err.to_string())?;
 
@@ -129,7 +138,29 @@ pub fn transactions_list(filters: TransactionsFilters) -> Result<TransactionsLis
 
     let items = db::list_transactions(&conn, &filters).map_err(|err| err.to_string())?;
     let totals = db::transaction_totals(&conn, &filters).map_err(|err| err.to_string())?;
-    Ok(TransactionsListResponse { items, totals })
+    let total_count =
+        db::transaction_total_count(&conn, &filters).map_err(|err| err.to_string())?;
+    Ok(TransactionsListResponse {
+        items,
+        totals,
+        total_count,
+    })
+}
+
+#[tauri::command]
+pub fn transactions_review_queue(
+    filters: TransactionsFilters,
+    limit: Option<i64>,
+) -> Result<TransactionsReviewQueueResponse, String> {
+    let conn = db::open_connection().map_err(|err| err.to_string())?;
+    db::init_database(&conn).map_err(|err| err.to_string())?;
+
+    let limit = limit.unwrap_or(120).clamp(1, 500);
+    let items = db::list_transactions_review_queue(&conn, &filters, limit)
+        .map_err(|err| err.to_string())?;
+    let total_count =
+        db::transaction_review_queue_total_count(&conn, &filters).map_err(|err| err.to_string())?;
+    Ok(TransactionsReviewQueueResponse { items, total_count })
 }
 
 #[tauri::command]
@@ -177,9 +208,43 @@ pub fn subcategories_upsert(
 pub fn rules_upsert(input: RuleUpsertInput) -> Result<RuleUpsertResponse, String> {
     let conn = db::open_connection().map_err(|err| err.to_string())?;
     db::init_database(&conn).map_err(|err| err.to_string())?;
-    let rule_id = db::upsert_rule(&conn, &input).map_err(|err| err.to_string())?;
-    apply_auto_categorization(&conn).map_err(|err| err.to_string())?;
+    let normalized_input = normalize_rule_input(input).map_err(|err| err.to_string())?;
+    validate_rule_input(&conn, &normalized_input).map_err(|err| err.to_string())?;
+    let rule_id = db::upsert_rule(&conn, &normalized_input).map_err(|err| err.to_string())?;
     Ok(RuleUpsertResponse { rule_id })
+}
+
+#[tauri::command]
+pub fn rules_list() -> Result<Vec<RuleListItem>, String> {
+    let conn = db::open_connection().map_err(|err| err.to_string())?;
+    db::init_database(&conn).map_err(|err| err.to_string())?;
+    db::list_rules(&conn).map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+pub fn rules_delete(rule_id: i64) -> Result<SettingsSimpleResponse, String> {
+    let conn = db::open_connection().map_err(|err| err.to_string())?;
+    db::init_database(&conn).map_err(|err| err.to_string())?;
+    let deleted = db::delete_rule(&conn, rule_id).map_err(|err| err.to_string())?;
+    if deleted == 0 {
+        return Err("Regra nao encontrada para exclusao.".to_string());
+    }
+    Ok(SettingsSimpleResponse { ok: true })
+}
+
+#[tauri::command]
+pub fn rules_dry_run(sample_limit: Option<i64>) -> Result<RulesDryRunResponse, String> {
+    let conn = db::open_connection().map_err(|err| err.to_string())?;
+    db::init_database(&conn).map_err(|err| err.to_string())?;
+    dry_run_auto_categorization(&conn, sample_limit).map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+pub fn rules_apply_batch() -> Result<UpdatedCountResponse, String> {
+    let conn = db::open_connection().map_err(|err| err.to_string())?;
+    db::init_database(&conn).map_err(|err| err.to_string())?;
+    let updated = apply_auto_categorization(&conn).map_err(|err| err.to_string())?;
+    Ok(UpdatedCountResponse { updated })
 }
 
 #[tauri::command]
@@ -204,7 +269,9 @@ pub fn dashboard_summary(input: DashboardInput) -> Result<DashboardSummaryRespon
 pub fn goals_upsert(input: GoalInput) -> Result<GoalUpsertResponse, String> {
     let conn = db::open_connection().map_err(|err| err.to_string())?;
     db::init_database(&conn).map_err(|err| err.to_string())?;
-    let goal_id = db::upsert_goal(&conn, &input).map_err(|err| err.to_string())?;
+    let normalized_input = normalize_goal_input(input).map_err(|err| err.to_string())?;
+    validate_goal_input(&normalized_input).map_err(|err| err.to_string())?;
+    let goal_id = db::upsert_goal(&conn, &normalized_input).map_err(|err| err.to_string())?;
     Ok(GoalUpsertResponse { goal_id })
 }
 
@@ -216,20 +283,72 @@ pub fn goals_list() -> Result<Vec<GoalListItem>, String> {
 }
 
 #[tauri::command]
-pub fn projection_run(input: ProjectionInput) -> Result<ProjectionResponse, String> {
+pub fn goal_allocation_upsert(
+    input: GoalAllocationInput,
+) -> Result<GoalAllocationUpsertResponse, String> {
     let conn = db::open_connection().map_err(|err| err.to_string())?;
     db::init_database(&conn).map_err(|err| err.to_string())?;
 
+    let normalized_input = normalize_goal_allocation_input(input).map_err(|err| err.to_string())?;
+    validate_goal_allocation_input(&conn, &normalized_input).map_err(|err| err.to_string())?;
+    db::upsert_goal_allocation(
+        &conn,
+        normalized_input.goal_id,
+        &normalized_input.scenario,
+        normalized_input.allocation_percent,
+    )
+    .map_err(|err| err.to_string())?;
+
+    Ok(GoalAllocationUpsertResponse {
+        goal_id: normalized_input.goal_id,
+        scenario: normalized_input.scenario,
+    })
+}
+
+#[tauri::command]
+pub fn goal_allocation_list(scenario: String) -> Result<Vec<GoalAllocationItem>, String> {
+    let conn = db::open_connection().map_err(|err| err.to_string())?;
+    db::init_database(&conn).map_err(|err| err.to_string())?;
+
+    let scenario = normalize_scenario(&scenario).map_err(|err| err.to_string())?;
+    db::list_goal_allocations_for_scenario(&conn, &scenario).map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+pub fn projection_run(input: ProjectionInput) -> Result<ProjectionResponse, String> {
+    let conn = db::open_connection().map_err(|err| err.to_string())?;
+    db::init_database(&conn).map_err(|err| err.to_string())?;
+    let scenario = normalize_scenario(&input.scenario).map_err(|err| err.to_string())?;
+
     let (income_pct, expense_pct) =
-        read_projection_scenario(&conn, &input.scenario).map_err(|err| err.to_string())?;
+        read_projection_scenario(&conn, &scenario).map_err(|err| err.to_string())?;
     let (avg_income, avg_expense) =
         average_monthly_income_expense(&conn).map_err(|err| err.to_string())?;
     let current_balance = latest_balance_snapshot(&conn).map_err(|err| err.to_string())?;
     let installments = projected_installments(&conn).map_err(|err| err.to_string())?;
     let goals = db::list_goals(&conn).map_err(|err| err.to_string())?;
+    let scenario_allocations =
+        db::list_goal_allocations(&conn, &scenario).map_err(|err| err.to_string())?;
+    let base_allocations = if scenario == "base" {
+        HashMap::new()
+    } else {
+        db::list_goal_allocations(&conn, "base").map_err(|err| err.to_string())?
+    };
+
+    let allocation_for_goal = |goal_id: i64, fallback: f64| {
+        scenario_allocations
+            .get(&goal_id)
+            .copied()
+            .or_else(|| base_allocations.get(&goal_id).copied())
+            .unwrap_or(fallback)
+            .max(0.0)
+    };
 
     let months_ahead = input.months_ahead.max(1).min(120);
-    let goal_allocation_total = goal_allocation_total_percent(&goals);
+    let goal_allocation_total = goals
+        .iter()
+        .map(|goal| allocation_for_goal(goal.id, goal.allocation_percent))
+        .sum::<f64>();
     let goal_allocation_capped = goal_allocation_total.min(100.0);
     let mut projection = Vec::new();
     let mut balance = current_balance;
@@ -263,8 +382,9 @@ pub fn projection_run(input: ProjectionInput) -> Result<ProjectionResponse, Stri
 
     let mut progress = Vec::new();
     for goal in goals {
+        let goal_allocation_percent = allocation_for_goal(goal.id, goal.allocation_percent);
         let goal_share = if goal_allocation_total > 0.0 {
-            goal.allocation_percent.max(0.0) / goal_allocation_total
+            goal_allocation_percent / goal_allocation_total
         } else {
             0.0
         };
@@ -321,6 +441,7 @@ pub fn settings_password_set(
 
 #[tauri::command]
 pub fn settings_password_test(
+    state: State<AppState>,
     input: SettingsPasswordTestInput,
 ) -> Result<SettingsPasswordTestResponse, String> {
     let provider = input.provider.trim();
@@ -347,9 +468,8 @@ pub fn settings_password_test(
         });
     };
 
-    let script = db::importer_script_path();
-    let output = run_python_script(
-        &script,
+    let output = run_importer_command(
+        &state,
         &[
             "test-password",
             "--file-path",
@@ -472,14 +592,61 @@ pub fn settings_feature_flags_set(
 }
 
 #[tauri::command]
+pub fn observability_log_event(
+    input: ObservabilityLogEventInput,
+) -> Result<SettingsSimpleResponse, String> {
+    let conn = db::open_connection().map_err(|err| err.to_string())?;
+    db::init_database(&conn).map_err(|err| err.to_string())?;
+    let normalized = normalize_observability_log_event_input(input).map_err(|err| err.to_string())?;
+    db::append_observability_event(
+        &conn,
+        &normalized.level,
+        &normalized.event_type,
+        &normalized.scope,
+        &normalized.message,
+        normalized
+            .context_json
+            .as_deref()
+            .unwrap_or("{}"),
+    )
+    .map_err(|err| err.to_string())?;
+    Ok(SettingsSimpleResponse { ok: true })
+}
+
+#[tauri::command]
+pub fn observability_error_trail(limit: Option<i64>) -> Result<Vec<ObservabilityEventItem>, String> {
+    let conn = db::open_connection().map_err(|err| err.to_string())?;
+    db::init_database(&conn).map_err(|err| err.to_string())?;
+    db::list_error_trail(&conn, limit.unwrap_or(40))
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
 pub fn manual_transaction_add(
     input: ManualTransactionInput,
 ) -> Result<ManualTransactionResponse, String> {
     let conn = db::open_connection().map_err(|err| err.to_string())?;
     db::init_database(&conn).map_err(|err| err.to_string())?;
+    let normalized_input =
+        normalize_manual_transaction_input(input).map_err(|err| err.to_string())?;
+    validate_manual_transaction_input(&conn, &normalized_input).map_err(|err| err.to_string())?;
     let transaction_id =
-        db::insert_manual_transaction(&conn, &input).map_err(|err| err.to_string())?;
+        db::insert_manual_transaction(&conn, &normalized_input).map_err(|err| err.to_string())?;
     Ok(ManualTransactionResponse { transaction_id })
+}
+
+#[tauri::command]
+pub fn manual_balance_snapshot_add(
+    input: ManualBalanceSnapshotInput,
+) -> Result<ManualBalanceSnapshotResponse, String> {
+    let conn = db::open_connection().map_err(|err| err.to_string())?;
+    db::init_database(&conn).map_err(|err| err.to_string())?;
+    let normalized_input =
+        normalize_manual_balance_snapshot_input(input).map_err(|err| err.to_string())?;
+    validate_manual_balance_snapshot_input(&normalized_input).map_err(|err| err.to_string())?;
+    let transaction_id = db::insert_manual_balance_snapshot(&conn, &normalized_input)
+        .map_err(|err| err.to_string())?;
+    Ok(ManualBalanceSnapshotResponse { transaction_id })
 }
 
 #[tauri::command]
@@ -488,8 +655,11 @@ pub fn recurring_template_upsert(
 ) -> Result<RecurringTemplateResponse, String> {
     let conn = db::open_connection().map_err(|err| err.to_string())?;
     db::init_database(&conn).map_err(|err| err.to_string())?;
+    let normalized_input =
+        normalize_recurring_template_input(input).map_err(|err| err.to_string())?;
+    validate_recurring_template_input(&conn, &normalized_input).map_err(|err| err.to_string())?;
     let template_id =
-        db::upsert_recurring_template(&conn, &input).map_err(|err| err.to_string())?;
+        db::upsert_recurring_template(&conn, &normalized_input).map_err(|err| err.to_string())?;
     Ok(RecurringTemplateResponse { template_id })
 }
 
@@ -500,8 +670,536 @@ pub fn recurring_template_list() -> Result<Vec<RecurringTemplateItem>, String> {
     db::list_recurring_templates(&conn).map_err(|err| err.to_string())
 }
 
-fn run_importer_scan(script_path: &Path, base_path: &str) -> Result<ImporterScanOutput> {
-    let output = run_python_script(script_path, &["scan", "--base-path", base_path])
+#[tauri::command]
+pub fn budget_upsert(input: BudgetUpsertInput) -> Result<BudgetUpsertResponse, String> {
+    let conn = db::open_connection().map_err(|err| err.to_string())?;
+    db::init_database(&conn).map_err(|err| err.to_string())?;
+    let normalized_input = normalize_budget_input(input).map_err(|err| err.to_string())?;
+    validate_budget_input(&conn, &normalized_input).map_err(|err| err.to_string())?;
+    let budget_id = db::upsert_monthly_budget(
+        &conn,
+        normalized_input.id,
+        &normalized_input.month,
+        &normalized_input.category_id,
+        &normalized_input.subcategory_id,
+        normalized_input.limit_cents,
+    )
+    .map_err(|err| err.to_string())?;
+    Ok(BudgetUpsertResponse { budget_id })
+}
+
+#[tauri::command]
+pub fn budget_delete(budget_id: i64) -> Result<SettingsSimpleResponse, String> {
+    let conn = db::open_connection().map_err(|err| err.to_string())?;
+    db::init_database(&conn).map_err(|err| err.to_string())?;
+    if budget_id <= 0 {
+        return Err("ID de orcamento invalido.".to_string());
+    }
+    let deleted = db::delete_monthly_budget(&conn, budget_id).map_err(|err| err.to_string())?;
+    if deleted == 0 {
+        return Err("Orcamento mensal nao encontrado para exclusao.".to_string());
+    }
+    Ok(SettingsSimpleResponse { ok: true })
+}
+
+#[tauri::command]
+pub fn budget_summary(month: String) -> Result<MonthlyBudgetSummaryResponse, String> {
+    let conn = db::open_connection().map_err(|err| err.to_string())?;
+    db::init_database(&conn).map_err(|err| err.to_string())?;
+    let month = normalize_month(&month).map_err(|err| err.to_string())?;
+    let items = db::list_monthly_budgets(&conn, &month).map_err(|err| err.to_string())?;
+
+    let limit_total_cents = items.iter().map(|item| item.limit_cents).sum::<i64>();
+    let spent_total_cents = items.iter().map(|item| item.spent_cents).sum::<i64>();
+    let remaining_total_cents = limit_total_cents - spent_total_cents;
+    let usage_percent = if limit_total_cents <= 0 {
+        0.0
+    } else {
+        (spent_total_cents as f64) * 100.0 / (limit_total_cents as f64)
+    };
+
+    Ok(MonthlyBudgetSummaryResponse {
+        month,
+        limit_total_cents,
+        spent_total_cents,
+        remaining_total_cents,
+        usage_percent: (usage_percent * 100.0).round() / 100.0,
+        alert_level: budget_alert_level(usage_percent),
+        items,
+    })
+}
+
+#[tauri::command]
+pub fn reconciliation_summary(
+    input: ReconciliationInput,
+) -> Result<ReconciliationSummaryResponse, String> {
+    let conn = db::open_connection().map_err(|err| err.to_string())?;
+    db::init_database(&conn).map_err(|err| err.to_string())?;
+
+    let normalized_input = normalize_reconciliation_input(input).map_err(|err| err.to_string())?;
+
+    let accounts = [("checking", "Conta"), ("credit_card", "Cartao")]
+        .into_iter()
+        .map(|(account_type, label)| {
+            let snapshot = db::latest_balance_snapshot_for_account(&conn, account_type)?;
+            let period_net = db::account_non_snapshot_total_in_period(
+                &conn,
+                account_type,
+                &normalized_input.period_start,
+                &normalized_input.period_end,
+            )?;
+            let pending_review_count = db::account_pending_review_count(&conn, account_type)?;
+
+            let (snapshot_cents, snapshot_at, reconstructed_cents, estimated_cents, divergence_cents, status) =
+                if let Some((snapshot_cents, snapshot_at)) = snapshot {
+                    let reconstructed_cents =
+                        db::account_non_snapshot_total_until(&conn, account_type, &snapshot_at)?;
+                    let after_snapshot =
+                        db::account_non_snapshot_total_after(&conn, account_type, &snapshot_at)?;
+                    let estimated_cents = snapshot_cents + after_snapshot;
+                    let divergence_cents = snapshot_cents - reconstructed_cents;
+                    let divergence_abs = divergence_cents.abs();
+                    let status = if divergence_abs == 0 {
+                        "ok".to_string()
+                    } else if divergence_abs <= 5_000 {
+                        "warning".to_string()
+                    } else {
+                        "divergent".to_string()
+                    };
+                    (
+                        Some(snapshot_cents),
+                        snapshot_at,
+                        reconstructed_cents,
+                        estimated_cents,
+                        Some(divergence_cents),
+                        status,
+                    )
+                } else {
+                    let reconstructed_cents =
+                        db::account_non_snapshot_total_all_time(&conn, account_type)?;
+                    (
+                        None,
+                        String::new(),
+                        reconstructed_cents,
+                        reconstructed_cents,
+                        None,
+                        "no_snapshot".to_string(),
+                    )
+                };
+
+            Ok(ReconciliationAccountItem {
+                account_type: account_type.to_string(),
+                label: label.to_string(),
+                snapshot_cents,
+                snapshot_at,
+                reconstructed_cents,
+                estimated_cents,
+                divergence_cents,
+                period_net_cents: period_net,
+                pending_review_count,
+                status,
+            })
+        })
+        .collect::<Result<Vec<_>>>();
+
+    Ok(ReconciliationSummaryResponse {
+        period_start: normalized_input.period_start,
+        period_end: normalized_input.period_end,
+        accounts: accounts.map_err(|err| err.to_string())?,
+    })
+}
+
+fn normalize_scenario(raw: &str) -> Result<String> {
+    let scenario = raw.trim().to_ascii_lowercase();
+    if SUPPORTED_SCENARIOS.contains(&scenario.as_str()) {
+        Ok(scenario)
+    } else {
+        Err(anyhow!(
+            "Cenario invalido. Use: base, optimistic ou pessimistic."
+        ))
+    }
+}
+
+fn normalize_date_field(raw: &str, field_name: &str) -> Result<String> {
+    let parsed = parse_date_only(raw).ok_or_else(|| {
+        anyhow!("{field_name} invalida. Use um formato de data compativel com YYYY-MM-DD.")
+    })?;
+    Ok(parsed.format("%Y-%m-%d").to_string())
+}
+
+fn normalize_goal_input(mut input: GoalInput) -> Result<GoalInput> {
+    input.name = input.name.trim().to_string();
+    input.horizon = input.horizon.trim().to_ascii_lowercase();
+    input.target_date = normalize_date_field(&input.target_date, "Data alvo")?;
+    Ok(input)
+}
+
+fn validate_goal_input(input: &GoalInput) -> Result<()> {
+    if let Some(goal_id) = input.id {
+        if goal_id <= 0 {
+            return Err(anyhow!("ID da meta invalido para atualizacao."));
+        }
+    }
+    if input.name.is_empty() {
+        return Err(anyhow!("Nome da meta e obrigatorio."));
+    }
+    if input.target_cents <= 0 {
+        return Err(anyhow!("Meta deve ter valor alvo maior que zero."));
+    }
+    if input.current_cents < 0 {
+        return Err(anyhow!("Valor atual da meta nao pode ser negativo."));
+    }
+    if !matches!(input.horizon.as_str(), "short" | "medium" | "long") {
+        return Err(anyhow!("Horizonte invalido. Use short, medium ou long."));
+    }
+    if !input.allocation_percent.is_finite() || !(0.0..=100.0).contains(&input.allocation_percent) {
+        return Err(anyhow!("Percentual de alocacao deve estar entre 0 e 100."));
+    }
+    Ok(())
+}
+
+fn normalize_goal_allocation_input(mut input: GoalAllocationInput) -> Result<GoalAllocationInput> {
+    input.scenario = normalize_scenario(&input.scenario)?;
+    Ok(input)
+}
+
+fn validate_goal_allocation_input(conn: &Connection, input: &GoalAllocationInput) -> Result<()> {
+    if input.goal_id <= 0 {
+        return Err(anyhow!("ID da meta invalido."));
+    }
+    if !input.allocation_percent.is_finite() || !(0.0..=100.0).contains(&input.allocation_percent) {
+        return Err(anyhow!("Percentual de alocacao deve estar entre 0 e 100."));
+    }
+    if !db::goal_exists(conn, input.goal_id)? {
+        return Err(anyhow!("Meta informada nao existe."));
+    }
+    Ok(())
+}
+
+fn normalize_rule_input(mut input: RuleUpsertInput) -> Result<RuleUpsertInput> {
+    if let Some(rule_id) = input.id {
+        if rule_id <= 0 {
+            return Err(anyhow!("ID da regra invalido para atualizacao."));
+        }
+    }
+
+    input.source_type = input.source_type.trim().to_ascii_lowercase();
+    input.direction = input.direction.trim().to_ascii_lowercase();
+    input.merchant_pattern = input.merchant_pattern.trim().to_string();
+    input.category_id = input.category_id.trim().to_string();
+    input.subcategory_id = input.subcategory_id.trim().to_string();
+    input.amount_min_cents = input.amount_min_cents.map(i64::abs);
+    input.amount_max_cents = input.amount_max_cents.map(i64::abs);
+
+    if !input.confidence.is_finite() {
+        return Err(anyhow!("Confianca da regra deve ser um numero valido."));
+    }
+    input.confidence = (input.confidence * 100.0).round() / 100.0;
+    Ok(input)
+}
+
+fn validate_rule_input(conn: &Connection, input: &RuleUpsertInput) -> Result<()> {
+    if input.category_id.is_empty() {
+        return Err(anyhow!("Categoria de destino da regra e obrigatoria."));
+    }
+    if !input.source_type.is_empty() && input.source_type.len() > 64 {
+        return Err(anyhow!("Fonte da regra excede o tamanho maximo permitido."));
+    }
+    if !input.direction.is_empty() && !matches!(input.direction.as_str(), "income" | "expense") {
+        return Err(anyhow!(
+            "Direcao da regra invalida. Use income, expense ou vazio."
+        ));
+    }
+    if input.merchant_pattern.len() > 120 {
+        return Err(anyhow!(
+            "Padrao de estabelecimento excede o tamanho maximo permitido."
+        ));
+    }
+    if !(0.0..=1.0).contains(&input.confidence) {
+        return Err(anyhow!("Confianca da regra deve estar entre 0 e 1."));
+    }
+    if let (Some(min), Some(max)) = (input.amount_min_cents, input.amount_max_cents) {
+        if min > max {
+            return Err(anyhow!(
+                "Faixa de valor invalida: minimo nao pode ser maior que maximo."
+            ));
+        }
+    }
+    validate_category_subcategory_pair(conn, &input.category_id, &input.subcategory_id)
+}
+
+fn normalize_manual_transaction_input(
+    mut input: ManualTransactionInput,
+) -> Result<ManualTransactionInput> {
+    input.occurred_at = normalize_date_field(&input.occurred_at, "Data da transacao")?;
+    input.description_raw = input.description_raw.trim().to_string();
+    input.flow_type = input.flow_type.trim().to_ascii_lowercase();
+    input.category_id = input.category_id.trim().to_string();
+    input.subcategory_id = input.subcategory_id.trim().to_string();
+    Ok(input)
+}
+
+fn validate_manual_transaction_input(
+    conn: &Connection,
+    input: &ManualTransactionInput,
+) -> Result<()> {
+    if input.description_raw.is_empty() {
+        return Err(anyhow!("Descricao da transacao e obrigatoria."));
+    }
+    if input.amount_cents == 0 {
+        return Err(anyhow!("Valor da transacao nao pode ser zero."));
+    }
+    match input.flow_type.as_str() {
+        "income" => {
+            if input.amount_cents <= 0 {
+                return Err(anyhow!("Transacao de entrada exige valor positivo."));
+            }
+        }
+        "expense" => {
+            if input.amount_cents >= 0 {
+                return Err(anyhow!("Transacao de saida exige valor negativo."));
+            }
+        }
+        _ => {
+            return Err(anyhow!(
+                "Tipo de fluxo invalido para transacao manual. Use income ou expense."
+            ));
+        }
+    }
+
+    validate_category_subcategory_pair(conn, &input.category_id, &input.subcategory_id)
+}
+
+fn normalize_manual_balance_snapshot_input(
+    mut input: ManualBalanceSnapshotInput,
+) -> Result<ManualBalanceSnapshotInput> {
+    input.account_type = input.account_type.trim().to_ascii_lowercase();
+    input.occurred_at = format!(
+        "{}T23:59:59",
+        normalize_date_field(&input.occurred_at, "Data do snapshot")?
+    );
+    input.description_raw = input.description_raw.trim().to_string();
+    Ok(input)
+}
+
+fn validate_manual_balance_snapshot_input(input: &ManualBalanceSnapshotInput) -> Result<()> {
+    if !matches!(input.account_type.as_str(), "checking" | "credit_card") {
+        return Err(anyhow!(
+            "Conta invalida para snapshot manual. Use checking ou credit_card."
+        ));
+    }
+    if input.description_raw.len() > 120 {
+        return Err(anyhow!(
+            "Descricao do snapshot excede o tamanho maximo permitido."
+        ));
+    }
+    Ok(())
+}
+
+fn normalize_recurring_template_input(
+    mut input: RecurringTemplateInput,
+) -> Result<RecurringTemplateInput> {
+    input.name = input.name.trim().to_string();
+    input.direction = input.direction.trim().to_ascii_lowercase();
+    input.start_date = normalize_date_field(&input.start_date, "Data inicial da recorrencia")?;
+    input.end_date = if input.end_date.trim().is_empty() {
+        String::new()
+    } else {
+        normalize_date_field(&input.end_date, "Data final da recorrencia")?
+    };
+    input.category_id = input.category_id.trim().to_string();
+    input.subcategory_id = input.subcategory_id.trim().to_string();
+    input.notes = input.notes.trim().to_string();
+    Ok(input)
+}
+
+fn validate_recurring_template_input(
+    conn: &Connection,
+    input: &RecurringTemplateInput,
+) -> Result<()> {
+    if let Some(template_id) = input.id {
+        if template_id <= 0 {
+            return Err(anyhow!("ID da recorrencia invalido para atualizacao."));
+        }
+    }
+    if input.name.is_empty() {
+        return Err(anyhow!("Nome da recorrencia e obrigatorio."));
+    }
+    if !matches!(input.direction.as_str(), "income" | "expense") {
+        return Err(anyhow!(
+            "Direcao invalida para recorrencia. Use income ou expense."
+        ));
+    }
+    if input.amount_cents <= 0 {
+        return Err(anyhow!("Valor da recorrencia deve ser maior que zero."));
+    }
+    if !(1..=31).contains(&input.day_of_month) {
+        return Err(anyhow!("Dia da recorrencia deve estar entre 1 e 31."));
+    }
+
+    let start_date = parse_date_only(&input.start_date)
+        .ok_or_else(|| anyhow!("Data inicial da recorrencia invalida."))?;
+    if !input.end_date.trim().is_empty() {
+        let end_date = parse_date_only(&input.end_date)
+            .ok_or_else(|| anyhow!("Data final da recorrencia invalida."))?;
+        if end_date < start_date {
+            return Err(anyhow!(
+                "Data final da recorrencia nao pode ser anterior a data inicial."
+            ));
+        }
+    }
+
+    validate_category_subcategory_pair(conn, &input.category_id, &input.subcategory_id)
+}
+
+fn normalize_budget_input(mut input: BudgetUpsertInput) -> Result<BudgetUpsertInput> {
+    if let Some(budget_id) = input.id {
+        if budget_id <= 0 {
+            return Err(anyhow!("ID do orcamento invalido para atualizacao."));
+        }
+    }
+    input.month = normalize_month(&input.month)?;
+    input.category_id = input.category_id.trim().to_string();
+    input.subcategory_id = input.subcategory_id.trim().to_string();
+    Ok(input)
+}
+
+fn validate_budget_input(conn: &Connection, input: &BudgetUpsertInput) -> Result<()> {
+    if input.limit_cents <= 0 {
+        return Err(anyhow!("Limite do orcamento deve ser maior que zero."));
+    }
+    validate_category_subcategory_pair(conn, &input.category_id, &input.subcategory_id)
+}
+
+fn normalize_month(raw: &str) -> Result<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(anyhow!("Mes do orcamento e obrigatorio."));
+    }
+
+    if trimmed.len() >= 7 {
+        let candidate = &trimmed[..7];
+        let bytes = candidate.as_bytes();
+        let matches_format = bytes.len() == 7
+            && bytes[0].is_ascii_digit()
+            && bytes[1].is_ascii_digit()
+            && bytes[2].is_ascii_digit()
+            && bytes[3].is_ascii_digit()
+            && bytes[4] == b'-'
+            && bytes[5].is_ascii_digit()
+            && bytes[6].is_ascii_digit();
+        if matches_format {
+            let month = candidate[5..7]
+                .parse::<u32>()
+                .map_err(|_| anyhow!("Mes do orcamento invalido."))?;
+            if (1..=12).contains(&month) {
+                return Ok(candidate.to_string());
+            }
+        }
+    }
+
+    let parsed = parse_date_only(trimmed)
+        .ok_or_else(|| anyhow!("Mes do orcamento invalido. Use o formato YYYY-MM."))?;
+    Ok(parsed.format("%Y-%m").to_string())
+}
+
+fn normalize_reconciliation_input(mut input: ReconciliationInput) -> Result<ReconciliationInput> {
+    input.period_start = normalize_date_field(&input.period_start, "Periodo inicial")?;
+    input.period_end = normalize_date_field(&input.period_end, "Periodo final")?;
+
+    let start = parse_date_only(&input.period_start)
+        .ok_or_else(|| anyhow!("Periodo inicial invalido."))?;
+    let end =
+        parse_date_only(&input.period_end).ok_or_else(|| anyhow!("Periodo final invalido."))?;
+    if end < start {
+        return Err(anyhow!("Periodo final nao pode ser anterior ao inicial."));
+    }
+    Ok(input)
+}
+
+fn normalize_observability_log_event_input(
+    mut input: ObservabilityLogEventInput,
+) -> Result<ObservabilityLogEventInput> {
+    input.level = input.level.trim().to_ascii_lowercase();
+    if !matches!(input.level.as_str(), "info" | "warn" | "error") {
+        return Err(anyhow!("Nivel de observabilidade invalido."));
+    }
+
+    input.event_type = input.event_type.trim().to_string();
+    if input.event_type.is_empty() {
+        return Err(anyhow!("Tipo de evento de observabilidade e obrigatorio."));
+    }
+    if input.event_type.len() > 96 {
+        return Err(anyhow!("Tipo de evento de observabilidade excede 96 caracteres."));
+    }
+
+    input.scope = input.scope.trim().to_string();
+    if input.scope.is_empty() {
+        return Err(anyhow!("Escopo de observabilidade e obrigatorio."));
+    }
+    if input.scope.len() > 96 {
+        return Err(anyhow!("Escopo de observabilidade excede 96 caracteres."));
+    }
+
+    input.message = input.message.trim().to_string();
+    if input.message.is_empty() {
+        return Err(anyhow!("Mensagem de observabilidade e obrigatoria."));
+    }
+    if input.message.len() > 2_000 {
+        return Err(anyhow!("Mensagem de observabilidade excede 2000 caracteres."));
+    }
+
+    input.context_json = input
+        .context_json
+        .map(|raw| raw.trim().to_string())
+        .filter(|raw| !raw.is_empty());
+    if let Some(context_json) = &input.context_json {
+        let parsed = serde_json::from_str::<serde_json::Value>(context_json)
+            .map_err(|_| anyhow!("context_json de observabilidade invalido."))?;
+        let normalized =
+            serde_json::to_string(&parsed).map_err(|_| anyhow!("context_json invalido."))?;
+        input.context_json = Some(normalized);
+    }
+
+    Ok(input)
+}
+
+fn budget_alert_level(usage_percent: f64) -> String {
+    if usage_percent >= 100.0 {
+        "exceeded".to_string()
+    } else if usage_percent >= 80.0 {
+        "warning".to_string()
+    } else {
+        "ok".to_string()
+    }
+}
+
+fn validate_category_subcategory_pair(
+    conn: &Connection,
+    category_id: &str,
+    subcategory_id: &str,
+) -> Result<()> {
+    let has_category = !category_id.trim().is_empty();
+    let has_subcategory = !subcategory_id.trim().is_empty();
+
+    if has_subcategory && !has_category {
+        return Err(anyhow!(
+            "Categoria e obrigatoria quando uma subcategoria for informada."
+        ));
+    }
+    if has_category && !db::category_exists(conn, category_id)? {
+        return Err(anyhow!("Categoria informada nao existe."));
+    }
+    if has_subcategory && !db::subcategory_belongs_to_category(conn, subcategory_id, category_id)? {
+        return Err(anyhow!(
+            "Subcategoria informada nao pertence a categoria selecionada."
+        ));
+    }
+    Ok(())
+}
+
+fn run_importer_scan(state: &AppState, base_path: &str) -> Result<ImporterScanOutput> {
+    let output = run_importer_command(state, &["scan", "--base-path", base_path])
         .context("Falha ao executar scan no importer.")?;
 
     if !output.status.success() {
@@ -513,12 +1211,12 @@ fn run_importer_scan(script_path: &Path, base_path: &str) -> Result<ImporterScan
 }
 
 fn run_importer_parse(
-    script_path: &Path,
+    state: &AppState,
     base_path: &str,
     btg_password: &str,
 ) -> Result<ImporterParseOutput> {
-    let output = run_python_script(
-        script_path,
+    let output = run_importer_command(
+        state,
         &[
             "parse",
             "--base-path",
@@ -535,6 +1233,29 @@ fn run_importer_parse(
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     serde_json::from_str::<ImporterParseOutput>(&stdout).context("Resposta JSON inválida do parse.")
+}
+
+fn run_importer_command(state: &AppState, args: &[&str]) -> Result<Output> {
+    if let Some(sidecar_path) = &state.importer_sidecar {
+        let mut cmd = Command::new(sidecar_path);
+        for arg in args {
+            cmd.arg(arg);
+        }
+
+        match cmd.output() {
+            Ok(output) => return Ok(output),
+            Err(sidecar_err) => {
+                return run_python_script(&state.importer_script, args).with_context(|| {
+                    format!(
+                        "Falha ao iniciar sidecar do importer em {} ({sidecar_err}) e fallback Python indisponivel.",
+                        sidecar_path.display()
+                    )
+                });
+            }
+        }
+    }
+
+    run_python_script(&state.importer_script, args)
 }
 
 fn run_python_script(script_path: &Path, args: &[&str]) -> Result<Output> {
@@ -718,27 +1439,59 @@ fn read_last_import_path(conn: &Connection) -> Option<String> {
     serde_json::from_str::<String>(&json_value).ok()
 }
 
-fn apply_auto_categorization(conn: &Connection) -> Result<usize> {
-    #[derive(Clone)]
-    struct Rule {
-        id: i64,
-        source_type: String,
-        direction: String,
-        merchant_pattern: String,
-        amount_min_cents: Option<i64>,
-        amount_max_cents: Option<i64>,
-        category_id: String,
-        subcategory_id: String,
-        confidence: f64,
-    }
+#[derive(Clone)]
+struct AutoCategorizationRule {
+    id: i64,
+    source_type: String,
+    direction: String,
+    merchant_pattern: String,
+    amount_min_cents: Option<i64>,
+    amount_max_cents: Option<i64>,
+    category_id: String,
+    category_name: String,
+    subcategory_id: String,
+    subcategory_name: String,
+    confidence: f64,
+}
 
+#[derive(Clone)]
+struct AutoCategorizationMatch {
+    tx_id: i64,
+    occurred_at: String,
+    source_type: String,
+    flow_type: String,
+    amount_cents: i64,
+    description_raw: String,
+    rule_id: i64,
+    score: f64,
+    category_id: String,
+    category_name: String,
+    subcategory_id: String,
+    subcategory_name: String,
+}
+
+fn load_auto_categorization_rules(conn: &Connection) -> Result<Vec<AutoCategorizationRule>> {
     let mut rules_stmt = conn.prepare(
-        "SELECT id, source_type, direction, merchant_pattern, amount_min_cents, amount_max_cents, category_id, IFNULL(subcategory_id, ''), confidence
-         FROM categorization_rules",
+        "SELECT
+           r.id,
+           r.source_type,
+           r.direction,
+           r.merchant_pattern,
+           r.amount_min_cents,
+           r.amount_max_cents,
+           r.category_id,
+           IFNULL(c.name, ''),
+           IFNULL(r.subcategory_id, ''),
+           IFNULL(s.name, ''),
+           r.confidence
+         FROM categorization_rules r
+         LEFT JOIN categories c ON c.id = r.category_id
+         LEFT JOIN subcategories s ON s.id = r.subcategory_id
+         ORDER BY r.id ASC",
     )?;
 
     let rule_rows = rules_stmt.query_map([], |row| {
-        Ok(Rule {
+        Ok(AutoCategorizationRule {
             id: row.get(0)?,
             source_type: row.get(1)?,
             direction: row.get(2)?,
@@ -746,8 +1499,10 @@ fn apply_auto_categorization(conn: &Connection) -> Result<usize> {
             amount_min_cents: row.get(4)?,
             amount_max_cents: row.get(5)?,
             category_id: row.get(6)?,
-            subcategory_id: row.get(7)?,
-            confidence: row.get(8)?,
+            category_name: row.get(7)?,
+            subcategory_id: row.get(8)?,
+            subcategory_name: row.get(9)?,
+            confidence: row.get(10)?,
         })
     })?;
 
@@ -755,31 +1510,39 @@ fn apply_auto_categorization(conn: &Connection) -> Result<usize> {
     for rule in rule_rows {
         rules.push(rule?);
     }
+    Ok(rules)
+}
+
+fn compute_auto_categorization_matches(conn: &Connection) -> Result<Vec<AutoCategorizationMatch>> {
+    let rules = load_auto_categorization_rules(conn)?;
     if rules.is_empty() {
-        return Ok(0);
+        return Ok(Vec::new());
     }
 
     let mut tx_stmt = conn.prepare(
-        "SELECT id, source_type, amount_cents, merchant_normalized, description_raw
+        "SELECT id, occurred_at, source_type, amount_cents, flow_type, merchant_normalized, description_raw
          FROM transactions
          WHERE (category_id IS NULL OR category_id = '')
-           AND flow_type IN ('income', 'expense')",
+           AND flow_type IN ('income', 'expense')
+         ORDER BY occurred_at DESC, id DESC",
     )?;
 
     let tx_rows = tx_stmt.query_map([], |row| {
         Ok((
             row.get::<_, i64>(0)?,
             row.get::<_, String>(1)?,
-            row.get::<_, i64>(2)?,
-            row.get::<_, String>(3)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, i64>(3)?,
             row.get::<_, String>(4)?,
+            row.get::<_, String>(5)?,
+            row.get::<_, String>(6)?,
         ))
     })?;
 
-    let mut updated = 0usize;
+    let mut matches = Vec::new();
     for tx in tx_rows {
-        let (tx_id, source_type, amount_cents, merchant, description) = tx?;
-        let direction = if amount_cents >= 0 {
+        let (tx_id, occurred_at, source_type, amount_cents, flow_type, merchant, description) = tx?;
+        let direction = if flow_type == "income" {
             "income"
         } else {
             "expense"
@@ -787,7 +1550,7 @@ fn apply_auto_categorization(conn: &Connection) -> Result<usize> {
         let merchant_lower = merchant.to_lowercase();
         let description_lower = description.to_lowercase();
 
-        let mut best_rule: Option<(Rule, f64)> = None;
+        let mut best_rule: Option<(AutoCategorizationRule, f64)> = None;
 
         for rule in &rules {
             let mut score = 0.0;
@@ -834,26 +1597,85 @@ fn apply_auto_categorization(conn: &Connection) -> Result<usize> {
             best_rule = Some((rule.clone(), score));
         }
 
-        if let Some((rule, _)) = best_rule {
-            conn.execute(
-                "UPDATE transactions
-                 SET category_id = ?1,
-                     subcategory_id = NULLIF(?2, ''),
-                     updated_at = ?3
-                 WHERE id = ?4",
-                params![
-                    rule.category_id,
-                    rule.subcategory_id,
-                    Utc::now().to_rfc3339(),
-                    tx_id
-                ],
-            )?;
-            conn.execute(
-                "UPDATE categorization_rules SET usage_count = usage_count + 1, updated_at = ?1 WHERE id = ?2",
-                params![Utc::now().to_rfc3339(), rule.id],
-            )?;
-            updated += 1;
+        if let Some((rule, score)) = best_rule {
+            matches.push(AutoCategorizationMatch {
+                tx_id,
+                occurred_at,
+                source_type,
+                flow_type,
+                amount_cents,
+                description_raw: description,
+                rule_id: rule.id,
+                score,
+                category_id: rule.category_id,
+                category_name: rule.category_name,
+                subcategory_id: rule.subcategory_id,
+                subcategory_name: rule.subcategory_name,
+            });
         }
+    }
+
+    Ok(matches)
+}
+
+fn dry_run_auto_categorization(
+    conn: &Connection,
+    sample_limit: Option<i64>,
+) -> Result<RulesDryRunResponse> {
+    let matches = compute_auto_categorization_matches(conn)?;
+    let max_sample = sample_limit.unwrap_or(12).clamp(1, 50) as usize;
+    let sample = matches
+        .iter()
+        .take(max_sample)
+        .map(|item| RuleDryRunItem {
+            transaction_id: item.tx_id,
+            occurred_at: item.occurred_at.clone(),
+            source_type: item.source_type.clone(),
+            flow_type: item.flow_type.clone(),
+            amount_cents: item.amount_cents,
+            description_raw: item.description_raw.clone(),
+            rule_id: item.rule_id,
+            score: item.score,
+            category_id: item.category_id.clone(),
+            category_name: item.category_name.clone(),
+            subcategory_id: item.subcategory_id.clone(),
+            subcategory_name: item.subcategory_name.clone(),
+        })
+        .collect();
+
+    Ok(RulesDryRunResponse {
+        matched_count: matches.len() as i64,
+        sample,
+    })
+}
+
+fn apply_auto_categorization(conn: &Connection) -> Result<usize> {
+    let matches = compute_auto_categorization_matches(conn)?;
+    if matches.is_empty() {
+        return Ok(0);
+    }
+
+    let now = Utc::now().to_rfc3339();
+    let mut updated = 0usize;
+    for matched in matches {
+        conn.execute(
+            "UPDATE transactions
+             SET category_id = ?1,
+                 subcategory_id = NULLIF(?2, ''),
+                 updated_at = ?3
+             WHERE id = ?4",
+            params![
+                matched.category_id,
+                matched.subcategory_id,
+                &now,
+                matched.tx_id
+            ],
+        )?;
+        conn.execute(
+            "UPDATE categorization_rules SET usage_count = usage_count + 1, updated_at = ?1 WHERE id = ?2",
+            params![&now, matched.rule_id],
+        )?;
+        updated += 1;
     }
 
     Ok(updated)
@@ -1212,16 +2034,6 @@ fn add_months(base: NaiveDate, months: i32) -> NaiveDate {
     NaiveDate::from_ymd_opt(year, month as u32, 1).unwrap_or(base)
 }
 
-fn goal_allocation_total_percent(goals: &[GoalListItem]) -> f64 {
-    if goals.is_empty() {
-        return 0.0;
-    }
-    goals
-        .iter()
-        .map(|g| g.allocation_percent.max(0.0))
-        .sum::<f64>()
-}
-
 fn first_btg_card_file(base_path_hint: Option<&str>) -> Option<String> {
     let mut folders = Vec::new();
     if let Some(base_path) = base_path_hint {
@@ -1266,4 +2078,215 @@ fn first_btg_card_file(base_path_hint: Option<&str>) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::{params, Connection};
+
+    fn setup_conn() -> Connection {
+        let conn = Connection::open_in_memory().expect("failed to open sqlite");
+        db::init_database(&conn).expect("failed to init database");
+        conn
+    }
+
+    #[test]
+    fn normalize_scenario_accepts_trimmed_case_insensitive_input() {
+        let normalized = normalize_scenario("  Optimistic  ").expect("scenario should normalize");
+        assert_eq!(normalized, "optimistic");
+    }
+
+    #[test]
+    fn validate_goal_allocation_requires_existing_goal() {
+        let conn = setup_conn();
+        let input = normalize_goal_allocation_input(GoalAllocationInput {
+            goal_id: 9999,
+            scenario: "base".to_string(),
+            allocation_percent: 25.0,
+        })
+        .expect("input should normalize");
+
+        let err = validate_goal_allocation_input(&conn, &input)
+            .expect_err("missing goal should be rejected")
+            .to_string();
+        assert!(err.contains("Meta informada nao existe."));
+    }
+
+    #[test]
+    fn validate_manual_transaction_rejects_incoherent_sign() {
+        let conn = setup_conn();
+        let input = normalize_manual_transaction_input(ManualTransactionInput {
+            occurred_at: "2026-03-02".to_string(),
+            amount_cents: -1000,
+            description_raw: "Salario".to_string(),
+            flow_type: "income".to_string(),
+            category_id: String::new(),
+            subcategory_id: String::new(),
+        })
+        .expect("input should normalize");
+
+        let err = validate_manual_transaction_input(&conn, &input)
+            .expect_err("income with negative amount should fail")
+            .to_string();
+        assert!(err.contains("entrada exige valor positivo"));
+    }
+
+    #[test]
+    fn validate_manual_balance_snapshot_rejects_unknown_account() {
+        let input = normalize_manual_balance_snapshot_input(ManualBalanceSnapshotInput {
+            account_type: "investment".to_string(),
+            occurred_at: "2026-03-05".to_string(),
+            balance_cents: 123_000,
+            description_raw: "Fechamento".to_string(),
+        })
+        .expect("snapshot input should normalize");
+
+        let err = validate_manual_balance_snapshot_input(&input)
+            .expect_err("invalid account type should fail")
+            .to_string();
+        assert!(err.contains("Conta invalida"));
+    }
+
+    #[test]
+    fn validate_recurring_template_rejects_end_date_before_start_date() {
+        let conn = setup_conn();
+        let input = normalize_recurring_template_input(RecurringTemplateInput {
+            id: None,
+            name: "Aluguel".to_string(),
+            direction: "expense".to_string(),
+            amount_cents: 150000,
+            day_of_month: 5,
+            start_date: "2026-04-10".to_string(),
+            end_date: "2026-04-01".to_string(),
+            category_id: "moradia".to_string(),
+            subcategory_id: String::new(),
+            notes: String::new(),
+            active: true,
+        })
+        .expect("input should normalize");
+
+        let err = validate_recurring_template_input(&conn, &input)
+            .expect_err("end date before start should fail")
+            .to_string();
+        assert!(err.contains("nao pode ser anterior"));
+    }
+
+    #[test]
+    fn validate_category_subcategory_pair_rejects_mismatch() {
+        let conn = setup_conn();
+        conn.execute(
+            "INSERT INTO subcategories (id, category_id, name) VALUES (?1, ?2, ?3)",
+            params!["moradia_aluguel", "moradia", "Aluguel"],
+        )
+        .expect("failed to insert subcategory");
+
+        let err = validate_category_subcategory_pair(&conn, "transporte", "moradia_aluguel")
+            .expect_err("mismatched subcategory should fail")
+            .to_string();
+        assert!(err.contains("nao pertence a categoria"));
+    }
+
+    #[test]
+    fn dry_run_returns_preview_without_mutating_transactions() {
+        let conn = setup_conn();
+        conn.execute(
+            "INSERT INTO categorization_rules (
+               source_type, direction, merchant_pattern, amount_min_cents, amount_max_cents,
+               category_id, subcategory_id, confidence, usage_count, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, NULL, NULL, ?4, NULL, ?5, 0, ?6, ?6)",
+            params![
+                "manual",
+                "expense",
+                "mercado",
+                "alimentacao",
+                0.60_f64,
+                Utc::now().to_rfc3339()
+            ],
+        )
+        .expect("failed to insert rule");
+
+        conn.execute(
+            "INSERT INTO transactions (
+               source_type, source_file_hash, external_ref, dedup_fingerprint, account_type, occurred_at,
+               competence_month, amount_cents, currency, description_raw, merchant_normalized,
+               category_id, subcategory_id, flow_type, metadata_json, is_manual, created_at, updated_at
+             ) VALUES (
+               'manual', 'seed', '', 'dry-run-rule-1', 'checking', '2026-03-01T12:00:00',
+               '2026-03', -12_300, 'BRL', 'Compra Mercado Centro', 'mercado centro',
+               NULL, NULL, 'expense', '{}', 1, ?1, ?1
+             )",
+            params![Utc::now().to_rfc3339()],
+        )
+        .expect("failed to insert transaction");
+
+        let dry_run = dry_run_auto_categorization(&conn, Some(5)).expect("dry-run should pass");
+        assert_eq!(dry_run.matched_count, 1);
+        assert_eq!(dry_run.sample.len(), 1);
+        assert_eq!(dry_run.sample[0].category_id, "alimentacao");
+
+        let category_after: Option<String> = conn
+            .query_row(
+                "SELECT category_id FROM transactions WHERE dedup_fingerprint = 'dry-run-rule-1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("failed to read transaction category");
+        assert!(category_after.is_none(), "dry-run must not mutate data");
+    }
+
+    #[test]
+    fn apply_batch_updates_transactions_and_rule_usage() {
+        let conn = setup_conn();
+        conn.execute(
+            "INSERT INTO categorization_rules (
+               source_type, direction, merchant_pattern, amount_min_cents, amount_max_cents,
+               category_id, subcategory_id, confidence, usage_count, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, NULL, NULL, ?4, NULL, ?5, 0, ?6, ?6)",
+            params![
+                "manual",
+                "expense",
+                "uber",
+                "transporte",
+                0.60_f64,
+                Utc::now().to_rfc3339()
+            ],
+        )
+        .expect("failed to insert rule");
+
+        conn.execute(
+            "INSERT INTO transactions (
+               source_type, source_file_hash, external_ref, dedup_fingerprint, account_type, occurred_at,
+               competence_month, amount_cents, currency, description_raw, merchant_normalized,
+               category_id, subcategory_id, flow_type, metadata_json, is_manual, created_at, updated_at
+             ) VALUES (
+               'manual', 'seed', '', 'apply-rule-1', 'checking', '2026-03-05T09:00:00',
+               '2026-03', -2_100, 'BRL', 'Uber Viagem', 'uber viagem',
+               NULL, NULL, 'expense', '{}', 1, ?1, ?1
+             )",
+            params![Utc::now().to_rfc3339()],
+        )
+        .expect("failed to insert transaction");
+
+        let updated = apply_auto_categorization(&conn).expect("batch apply should pass");
+        assert_eq!(updated, 1);
+
+        let category_after: String = conn
+            .query_row(
+                "SELECT IFNULL(category_id, '') FROM transactions WHERE dedup_fingerprint = 'apply-rule-1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("failed to read transaction category");
+        assert_eq!(category_after, "transporte");
+
+        let usage_count: i64 = conn
+            .query_row(
+                "SELECT usage_count FROM categorization_rules LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("failed to read usage_count");
+        assert_eq!(usage_count, 1);
+    }
 }

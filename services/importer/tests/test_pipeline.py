@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from garlic_importer.pipeline import parse_all, scan_candidates
 
 
 BASE_PATH = Path(__file__).resolve().parents[3] / "ArquivosFinance"
-BTG_PASSWORD = "09400967900"
+BTG_PASSWORD = os.getenv("GARLIC_TEST_BTG_PASSWORD", "")
 
 
 def test_scan_candidates_finds_all_sources() -> None:
@@ -38,4 +39,3 @@ def test_parse_all_creates_expected_fingerprints_and_types() -> None:
         "btg_card_encrypted_xlsx",
     }
     assert sample["flowType"] in {"income", "expense", "transfer", "credit_card_payment", "balance_snapshot"}
-

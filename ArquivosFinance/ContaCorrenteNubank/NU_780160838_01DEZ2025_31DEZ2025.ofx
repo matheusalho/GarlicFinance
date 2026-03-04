@@ -45,7 +45,7 @@ NEWFILEUID:NONE
 <DTPOSTED>20251201000000[-3:BRT]</DTPOSTED>
 <TRNAMT>222.07</TRNAMT>
 <FITID>692d9550-6a50-4ee8-9f1d-7b861d4530a6</FITID>
-<MEMO>Transferência recebida pelo Pix - Matheus Gasparino Alho - •••.009.679-•• - BANCO BTG PACTUAL S.A. (0208) Agência: 20 Conta: 480667-0</MEMO>
+<MEMO>Transferência recebida pelo Pix - Pessoa Anonima - ***.***.***-** - BANCO BTG PACTUAL S.A. (0208) Agência: 20 Conta: 480667-0</MEMO>
 </STMTTRN>
 <STMTTRN>
 <TRNTYPE>CREDIT</TRNTYPE>
@@ -59,14 +59,14 @@ NEWFILEUID:NONE
 <DTPOSTED>20251201000000[-3:BRT]</DTPOSTED>
 <TRNAMT>-13.00</TRNAMT>
 <FITID>692d95a2-173b-470c-aa2a-fd5a2f9483e9:reversal</FITID>
-<MEMO>Transferência enviada pelo Pix - Matheus Gasparino Alho - •••.009.679-•• - BANCO BTG PACTUAL S.A. (0208) Agência: 20 Conta: 480667-0</MEMO>
+<MEMO>Transferência enviada pelo Pix - Pessoa Anonima - ***.***.***-** - BANCO BTG PACTUAL S.A. (0208) Agência: 20 Conta: 480667-0</MEMO>
 </STMTTRN>
 <STMTTRN>
 <TRNTYPE>CREDIT</TRNTYPE>
 <DTPOSTED>20251201000000[-3:BRT]</DTPOSTED>
 <TRNAMT>13.00</TRNAMT>
 <FITID>692d95c4-147b-470f-a837-efda386cadf7</FITID>
-<MEMO>Transferência recebida pelo Pix - Matheus Gasparino Alho - •••.009.679-•• - BANCO BTG PACTUAL S.A. (0208) Agência: 20 Conta: 480667-0</MEMO>
+<MEMO>Transferência recebida pelo Pix - Pessoa Anonima - ***.***.***-** - BANCO BTG PACTUAL S.A. (0208) Agência: 20 Conta: 480667-0</MEMO>
 </STMTTRN>
 <STMTTRN>
 <TRNTYPE>DEBIT</TRNTYPE>
@@ -87,14 +87,14 @@ NEWFILEUID:NONE
 <DTPOSTED>20251203000000[-3:BRT]</DTPOSTED>
 <TRNAMT>-175.00</TRNAMT>
 <FITID>6930afbe-8516-416e-85bb-f2931ea2c585:reversal</FITID>
-<MEMO>Transferência enviada pelo Pix - RAUL AUGUSTO CALDAS DOMINGOS - •••.604.396-•• - BANCO BTG PACTUAL S.A. (0208) Agência: 20 Conta: 536717-8</MEMO>
+<MEMO>Transferência enviada pelo Pix - RAUL AUGUSTO CALDAS DOMINGOS - ***.***.***-** - BANCO BTG PACTUAL S.A. (0208) Agência: 20 Conta: 536717-8</MEMO>
 </STMTTRN>
 <STMTTRN>
 <TRNTYPE>CREDIT</TRNTYPE>
 <DTPOSTED>20251203000000[-3:BRT]</DTPOSTED>
 <TRNAMT>65.00</TRNAMT>
 <FITID>6930ecaf-de8a-4f8f-a1f0-5c2618cd3fe1</FITID>
-<MEMO>Transferência recebida pelo Pix - Claudia De Cassia Gasparino Alho - •••.465.519-•• - COOP SICREDI AGROEMPRESARIAL Agência: 723 Conta: 26464-4</MEMO>
+<MEMO>Transferência recebida pelo Pix - Pessoa Anonima - ***.***.***-** - COOP SICREDI AGROEMPRESARIAL Agência: 723 Conta: 26464-4</MEMO>
 </STMTTRN>
 <STMTTRN>
 <TRNTYPE>DEBIT</TRNTYPE>
@@ -122,7 +122,7 @@ NEWFILEUID:NONE
 <DTPOSTED>20251208000000[-3:BRT]</DTPOSTED>
 <TRNAMT>-170.00</TRNAMT>
 <FITID>6936fbb4-a3ea-4f4e-bfc4-fdb53eb24411:reversal</FITID>
-<MEMO>Transferência enviada pelo Pix - ELOISA DE GOIS MACIEL - •••.093.217-•• - BCO BRADESCO S.A. (0237) Agência: 53 Conta: 400232-6</MEMO>
+<MEMO>Transferência enviada pelo Pix - ELOISA DE GOIS MACIEL - ***.***.***-** - BCO BRADESCO S.A. (0237) Agência: 53 Conta: 400232-6</MEMO>
 </STMTTRN>
 <STMTTRN>
 <TRNTYPE>CREDIT</TRNTYPE>
@@ -136,28 +136,28 @@ NEWFILEUID:NONE
 <DTPOSTED>20251212000000[-3:BRT]</DTPOSTED>
 <TRNAMT>-270.00</TRNAMT>
 <FITID>693c2ee8-41ad-4221-95a6-510808d16ebc:reversal</FITID>
-<MEMO>Transferência enviada pelo Pix - Larah N Ferreira - •••.321.099-•• - NU PAGAMENTOS - IP (0260) Agência: 1 Conta: 70647759-7</MEMO>
+<MEMO>Transferência enviada pelo Pix - Larah N Ferreira - ***.***.***-** - NU PAGAMENTOS - IP (0260) Agência: 1 Conta: 70647759-7</MEMO>
 </STMTTRN>
 <STMTTRN>
 <TRNTYPE>CREDIT</TRNTYPE>
 <DTPOSTED>20251212000000[-3:BRT]</DTPOSTED>
 <TRNAMT>254.79</TRNAMT>
 <FITID>693c9cdc-054c-47b9-8690-c1a72032888a</FITID>
-<MEMO>Transferência Recebida - Claudia de Cassia Gasparino Alho - •••.465.519-•• - NU PAGAMENTOS - IP (0260) Agência: 1 Conta: 8025095-4</MEMO>
+<MEMO>Transferência Recebida - Pessoa Anonima - ***.***.***-** - NU PAGAMENTOS - IP (0260) Agência: 1 Conta: 8025095-4</MEMO>
 </STMTTRN>
 <STMTTRN>
 <TRNTYPE>DEBIT</TRNTYPE>
 <DTPOSTED>20251212000000[-3:BRT]</DTPOSTED>
 <TRNAMT>-254.79</TRNAMT>
 <FITID>693c9daa-ef54-4c7a-866f-758b6f42fdf6</FITID>
-<MEMO>Transferência enviada pelo Pix - Giovanna Falcao Fredegotto - •••.419.099-•• - NU PAGAMENTOS - IP (0260) Agência: 1 Conta: 74719778-4</MEMO>
+<MEMO>Transferência enviada pelo Pix - Giovanna Falcao Fredegotto - ***.***.***-** - NU PAGAMENTOS - IP (0260) Agência: 1 Conta: 74719778-4</MEMO>
 </STMTTRN>
 <STMTTRN>
 <TRNTYPE>CREDIT</TRNTYPE>
 <DTPOSTED>20251212000000[-3:BRT]</DTPOSTED>
 <TRNAMT>42.00</TRNAMT>
 <FITID>693cce2a-bec9-4999-8925-d2ca372b1ab0</FITID>
-<MEMO>Transferência recebida pelo Pix - Bianca Dos Santos Cestari - •••.641.188-•• - BANCO BTG PACTUAL S.A. (0208) Agência: 20 Conta: 480644-7</MEMO>
+<MEMO>Transferência recebida pelo Pix - Bianca Dos Santos Cestari - ***.***.***-** - BANCO BTG PACTUAL S.A. (0208) Agência: 20 Conta: 480644-7</MEMO>
 </STMTTRN>
 <STMTTRN>
 <TRNTYPE>DEBIT</TRNTYPE>
@@ -178,7 +178,7 @@ NEWFILEUID:NONE
 <DTPOSTED>20251216000000[-3:BRT]</DTPOSTED>
 <TRNAMT>-11.00</TRNAMT>
 <FITID>694160e2-5a95-48e2-b2b3-62229455bab1:reversal</FITID>
-<MEMO>Transferência enviada pelo Pix - Amos Emanuel De Andrade Campos - •••.945.519-•• - PICPAY (0380) Agência: 1 Conta: 8031231-4</MEMO>
+<MEMO>Transferência enviada pelo Pix - Amos Emanuel De Andrade Campos - ***.***.***-** - PICPAY (0380) Agência: 1 Conta: 8031231-4</MEMO>
 </STMTTRN>
 <STMTTRN>
 <TRNTYPE>CREDIT</TRNTYPE>
@@ -192,7 +192,7 @@ NEWFILEUID:NONE
 <DTPOSTED>20251218000000[-3:BRT]</DTPOSTED>
 <TRNAMT>-11.00</TRNAMT>
 <FITID>69440c90-5b9c-4ee9-b717-0e03cd7d7287:reversal</FITID>
-<MEMO>Transferência enviada pelo Pix - LUAN MATHEUS CITO - •••.866.369-•• - ITAÚ UNIBANCO S.A. (0341) Agência: 8092 Conta: 49050-0</MEMO>
+<MEMO>Transferência enviada pelo Pix - LUAN MATHEUS CITO - ***.***.***-** - ITAÚ UNIBANCO S.A. (0341) Agência: 8092 Conta: 49050-0</MEMO>
 </STMTTRN>
 <STMTTRN>
 <TRNTYPE>CREDIT</TRNTYPE>
@@ -206,7 +206,7 @@ NEWFILEUID:NONE
 <DTPOSTED>20251222000000[-3:BRT]</DTPOSTED>
 <TRNAMT>-170.00</TRNAMT>
 <FITID>6949700c-0649-4727-99ed-87beb47f0aa6:reversal</FITID>
-<MEMO>Transferência enviada pelo Pix - ELOISA DE GOIS MACIEL - •••.093.217-•• - BCO BRADESCO S.A. (0237) Agência: 53 Conta: 400232-6</MEMO>
+<MEMO>Transferência enviada pelo Pix - ELOISA DE GOIS MACIEL - ***.***.***-** - BCO BRADESCO S.A. (0237) Agência: 53 Conta: 400232-6</MEMO>
 </STMTTRN>
 <STMTTRN>
 <TRNTYPE>CREDIT</TRNTYPE>
@@ -220,21 +220,21 @@ NEWFILEUID:NONE
 <DTPOSTED>20251222000000[-3:BRT]</DTPOSTED>
 <TRNAMT>-16.00</TRNAMT>
 <FITID>6949ac28-a3ff-4bd9-ae2a-bb959670aa28:reversal</FITID>
-<MEMO>Transferência enviada pelo Pix - Daiane Martins Barboza - •••.604.479-•• - ITAÚ UNIBANCO S.A. (0341) Agência: 109 Conta: 95916-3</MEMO>
+<MEMO>Transferência enviada pelo Pix - Daiane Martins Barboza - ***.***.***-** - ITAÚ UNIBANCO S.A. (0341) Agência: 109 Conta: 95916-3</MEMO>
 </STMTTRN>
 <STMTTRN>
 <TRNTYPE>CREDIT</TRNTYPE>
 <DTPOSTED>20251226000000[-3:BRT]</DTPOSTED>
 <TRNAMT>42.00</TRNAMT>
 <FITID>694f2f5d-5984-4c26-9608-9e800243c638</FITID>
-<MEMO>Transferência recebida pelo Pix - HUGO GABRIEL HIRATA - •••.466.299-•• - BANCO SICOOB S.A. (0756) Agência: 4374 Conta: 64359106-0</MEMO>
+<MEMO>Transferência recebida pelo Pix - HUGO GABRIEL HIRATA - ***.***.***-** - BANCO SICOOB S.A. (0756) Agência: 4374 Conta: 64359106-0</MEMO>
 </STMTTRN>
 <STMTTRN>
 <TRNTYPE>CREDIT</TRNTYPE>
 <DTPOSTED>20251231000000[-3:BRT]</DTPOSTED>
 <TRNAMT>295.81</TRNAMT>
 <FITID>69553e7e-6216-486f-aaaf-1ad30b422cbb</FITID>
-<MEMO>Transferência recebida pelo Pix - Matheus Gasparino Alho - •••.009.679-•• - BANCO BTG PACTUAL S.A. (0208) Agência: 20 Conta: 480667-0</MEMO>
+<MEMO>Transferência recebida pelo Pix - Pessoa Anonima - ***.***.***-** - BANCO BTG PACTUAL S.A. (0208) Agência: 20 Conta: 480667-0</MEMO>
 </STMTTRN>
 <STMTTRN>
 <TRNTYPE>DEBIT</TRNTYPE>

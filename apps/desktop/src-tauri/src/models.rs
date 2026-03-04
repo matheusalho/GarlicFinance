@@ -80,6 +80,8 @@ pub struct TransactionsFilters {
     pub category_id: Option<String>,
     pub flow_type: Option<String>,
     pub source_type: Option<String>,
+    pub account_type: Option<String>,
+    pub only_pending: Option<bool>,
     pub search: Option<String>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
@@ -116,6 +118,14 @@ pub struct TransactionTotals {
 pub struct TransactionsListResponse {
     pub items: Vec<TransactionItem>,
     pub totals: TransactionTotals,
+    pub total_count: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransactionsReviewQueueResponse {
+    pub items: Vec<TransactionItem>,
+    pub total_count: i64,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -207,6 +217,48 @@ pub struct RuleUpsertResponse {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct RuleListItem {
+    pub id: i64,
+    pub source_type: String,
+    pub direction: String,
+    pub merchant_pattern: String,
+    pub amount_min_cents: Option<i64>,
+    pub amount_max_cents: Option<i64>,
+    pub category_id: String,
+    pub category_name: String,
+    pub subcategory_id: String,
+    pub subcategory_name: String,
+    pub confidence: f64,
+    pub usage_count: i64,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuleDryRunItem {
+    pub transaction_id: i64,
+    pub occurred_at: String,
+    pub source_type: String,
+    pub flow_type: String,
+    pub amount_cents: i64,
+    pub description_raw: String,
+    pub rule_id: i64,
+    pub score: f64,
+    pub category_id: String,
+    pub category_name: String,
+    pub subcategory_id: String,
+    pub subcategory_name: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RulesDryRunResponse {
+    pub matched_count: i64,
+    pub sample: Vec<RuleDryRunItem>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DashboardInput {
     pub period_start: String,
     pub period_end: String,
@@ -280,6 +332,29 @@ pub struct GoalListItem {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GoalAllocationInput {
+    pub goal_id: i64,
+    pub scenario: String,
+    pub allocation_percent: f64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GoalAllocationItem {
+    pub goal_id: i64,
+    pub scenario: String,
+    pub allocation_percent: f64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GoalAllocationUpsertResponse {
+    pub goal_id: i64,
+    pub scenario: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProjectionInput {
     pub scenario: String,
     pub months_ahead: i64,
@@ -311,6 +386,102 @@ pub struct GoalProjectionProgress {
 pub struct ProjectionResponse {
     pub monthly_projection: Vec<ProjectionMonth>,
     pub goal_progress: Vec<GoalProjectionProgress>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BudgetUpsertInput {
+    pub id: Option<i64>,
+    pub month: String,
+    pub category_id: String,
+    pub subcategory_id: String,
+    pub limit_cents: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BudgetUpsertResponse {
+    pub budget_id: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MonthlyBudgetItem {
+    pub id: i64,
+    pub month: String,
+    pub category_id: String,
+    pub category_name: String,
+    pub subcategory_id: String,
+    pub subcategory_name: String,
+    pub limit_cents: i64,
+    pub spent_cents: i64,
+    pub remaining_cents: i64,
+    pub usage_percent: f64,
+    pub alert_level: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MonthlyBudgetSummaryResponse {
+    pub month: String,
+    pub limit_total_cents: i64,
+    pub spent_total_cents: i64,
+    pub remaining_total_cents: i64,
+    pub usage_percent: f64,
+    pub alert_level: String,
+    pub items: Vec<MonthlyBudgetItem>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReconciliationInput {
+    pub period_start: String,
+    pub period_end: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReconciliationAccountItem {
+    pub account_type: String,
+    pub label: String,
+    pub snapshot_cents: Option<i64>,
+    pub snapshot_at: String,
+    pub reconstructed_cents: i64,
+    pub estimated_cents: i64,
+    pub divergence_cents: Option<i64>,
+    pub period_net_cents: i64,
+    pub pending_review_count: i64,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReconciliationSummaryResponse {
+    pub period_start: String,
+    pub period_end: String,
+    pub accounts: Vec<ReconciliationAccountItem>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ObservabilityLogEventInput {
+    pub level: String,
+    pub event_type: String,
+    pub scope: String,
+    pub message: String,
+    pub context_json: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ObservabilityEventItem {
+    pub id: i64,
+    pub created_at: String,
+    pub level: String,
+    pub event_type: String,
+    pub scope: String,
+    pub message: String,
+    pub context_json: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -432,6 +603,21 @@ pub struct ManualTransactionInput {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ManualTransactionResponse {
+    pub transaction_id: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManualBalanceSnapshotInput {
+    pub account_type: String,
+    pub occurred_at: String,
+    pub balance_cents: i64,
+    pub description_raw: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManualBalanceSnapshotResponse {
     pub transaction_id: i64,
 }
 

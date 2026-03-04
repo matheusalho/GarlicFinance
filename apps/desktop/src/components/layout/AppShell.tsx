@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+﻿import type { ReactNode } from 'react'
 
 type BasisMode = 'purchase' | 'cashflow'
 type UiMode = 'simple' | 'advanced'
@@ -25,6 +25,7 @@ interface AppShellProps {
   onGlobalSearchChange: (value: string) => void
   loading: boolean
   statusMessage: string
+  sidebarPanel?: ReactNode
   sidebarActions?: ReactNode
   children: ReactNode
 }
@@ -45,6 +46,7 @@ export function AppShell({
   onGlobalSearchChange,
   loading,
   statusMessage,
+  sidebarPanel,
   sidebarActions,
   children,
 }: AppShellProps) {
@@ -73,6 +75,7 @@ export function AppShell({
           ))}
         </nav>
 
+        {sidebarPanel && <div className="gf-sidebar-panel">{sidebarPanel}</div>}
         {sidebarActions && <div className="gf-sidebar-actions">{sidebarActions}</div>}
       </aside>
 

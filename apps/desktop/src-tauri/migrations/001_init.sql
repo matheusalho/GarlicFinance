@@ -70,6 +70,42 @@ CREATE INDEX IF NOT EXISTS idx_transactions_competence_month ON transactions(com
 CREATE INDEX IF NOT EXISTS idx_transactions_flow_type ON transactions(flow_type);
 CREATE INDEX IF NOT EXISTS idx_transactions_category_id ON transactions(category_id);
 
+CREATE TRIGGER IF NOT EXISTS trg_transactions_subcategory_matches_category_insert
+BEFORE INSERT ON transactions
+FOR EACH ROW
+WHEN NEW.subcategory_id IS NOT NULL AND NEW.subcategory_id <> ''
+BEGIN
+  SELECT CASE
+    WHEN NEW.category_id IS NULL OR NEW.category_id = '' THEN
+      RAISE(ABORT, 'category_id required when subcategory_id is set')
+    WHEN NOT EXISTS (
+      SELECT 1
+      FROM subcategories s
+      WHERE s.id = NEW.subcategory_id
+        AND s.category_id = NEW.category_id
+    ) THEN
+      RAISE(ABORT, 'subcategory_id does not belong to category_id')
+  END;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_transactions_subcategory_matches_category_update
+BEFORE UPDATE OF category_id, subcategory_id ON transactions
+FOR EACH ROW
+WHEN NEW.subcategory_id IS NOT NULL AND NEW.subcategory_id <> ''
+BEGIN
+  SELECT CASE
+    WHEN NEW.category_id IS NULL OR NEW.category_id = '' THEN
+      RAISE(ABORT, 'category_id required when subcategory_id is set')
+    WHEN NOT EXISTS (
+      SELECT 1
+      FROM subcategories s
+      WHERE s.id = NEW.subcategory_id
+        AND s.category_id = NEW.category_id
+    ) THEN
+      RAISE(ABORT, 'subcategory_id does not belong to category_id')
+  END;
+END;
+
 CREATE TABLE IF NOT EXISTS categorization_rules (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   source_type TEXT NOT NULL DEFAULT '',

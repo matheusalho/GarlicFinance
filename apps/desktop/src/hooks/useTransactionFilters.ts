@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 
 export interface TransactionsUiFilters {
   search: string
   flowType: string
   sourceType: string
+  accountType: '' | 'checking' | 'credit_card'
+  onlyPending: boolean
 }
 
 interface UseTransactionFiltersInput {
@@ -11,23 +13,29 @@ interface UseTransactionFiltersInput {
   periodEnd: string
 }
 
+const createEmptyFilters = (): TransactionsUiFilters => ({
+  search: '',
+  flowType: '',
+  sourceType: '',
+  accountType: '',
+  onlyPending: false,
+})
+
 export function useTransactionFilters({ periodStart, periodEnd }: UseTransactionFiltersInput) {
   const [txFiltersDraft, setTxFiltersDraft] = useState<TransactionsUiFilters>({
-    search: '',
-    flowType: '',
-    sourceType: '',
+    ...createEmptyFilters(),
   })
   const [txFiltersApplied, setTxFiltersApplied] = useState<TransactionsUiFilters>({
-    search: '',
-    flowType: '',
-    sourceType: '',
+    ...createEmptyFilters(),
   })
 
   const hasPendingTxFilterChanges = useMemo(
     () =>
       txFiltersDraft.search.trim() !== txFiltersApplied.search ||
       txFiltersDraft.flowType !== txFiltersApplied.flowType ||
-      txFiltersDraft.sourceType !== txFiltersApplied.sourceType,
+      txFiltersDraft.sourceType !== txFiltersApplied.sourceType ||
+      txFiltersDraft.accountType !== txFiltersApplied.accountType ||
+      txFiltersDraft.onlyPending !== txFiltersApplied.onlyPending,
     [txFiltersApplied, txFiltersDraft],
   )
 
@@ -37,11 +45,20 @@ export function useTransactionFilters({ periodStart, periodEnd }: UseTransaction
       endDate: periodEnd,
       flowType: txFiltersApplied.flowType || undefined,
       sourceType: txFiltersApplied.sourceType || undefined,
+      accountType: txFiltersApplied.accountType || undefined,
+      onlyPending: txFiltersApplied.onlyPending || undefined,
       search: txFiltersApplied.search || undefined,
-      limit: 300,
       offset: 0,
     }),
-    [periodEnd, periodStart, txFiltersApplied.flowType, txFiltersApplied.search, txFiltersApplied.sourceType],
+    [
+      periodEnd,
+      periodStart,
+      txFiltersApplied.accountType,
+      txFiltersApplied.flowType,
+      txFiltersApplied.onlyPending,
+      txFiltersApplied.search,
+      txFiltersApplied.sourceType,
+    ],
   )
 
   useEffect(() => {
@@ -55,40 +72,79 @@ export function useTransactionFilters({ periodStart, periodEnd }: UseTransaction
     return () => window.clearTimeout(timeout)
   }, [txFiltersDraft.search])
 
-  const setTxSearch = (value: string) => {
-    setTxFiltersDraft((previous) => ({
-      ...previous,
-      search: value,
-    }))
-  }
+  const setTxSearch = useCallback((value: string) => {
+    setTxFiltersDraft((previous) => {
+      if (previous.search === value) return previous
+      return {
+        ...previous,
+        search: value,
+      }
+    })
+  }, [])
 
-  const setTxFlowType = (value: string) => {
-    setTxFiltersDraft((previous) => ({
-      ...previous,
-      flowType: value,
-    }))
-  }
+  const setTxFlowType = useCallback((value: string) => {
+    setTxFiltersDraft((previous) => {
+      if (previous.flowType === value) return previous
+      return {
+        ...previous,
+        flowType: value,
+      }
+    })
+  }, [])
 
-  const setTxSourceType = (value: string) => {
-    setTxFiltersDraft((previous) => ({
-      ...previous,
-      sourceType: value,
-    }))
-  }
+  const setTxSourceType = useCallback((value: string) => {
+    setTxFiltersDraft((previous) => {
+      if (previous.sourceType === value) return previous
+      return {
+        ...previous,
+        sourceType: value,
+      }
+    })
+  }, [])
 
-  const applyTxFilters = () => {
-    setTxFiltersApplied({
+  const applyTxFilters = useCallback(() => {
+    const next = {
       search: txFiltersDraft.search.trim(),
       flowType: txFiltersDraft.flowType,
       sourceType: txFiltersDraft.sourceType,
+      accountType: txFiltersDraft.accountType,
+      onlyPending: txFiltersDraft.onlyPending,
+    }
+    setTxFiltersApplied((previous) => {
+      if (
+        previous.search === next.search &&
+        previous.flowType === next.flowType &&
+        previous.sourceType === next.sourceType &&
+        previous.accountType === next.accountType &&
+        previous.onlyPending === next.onlyPending
+      ) {
+        return previous
+      }
+      return next
     })
-  }
+  }, [
+    txFiltersDraft.accountType,
+    txFiltersDraft.flowType,
+    txFiltersDraft.onlyPending,
+    txFiltersDraft.search,
+    txFiltersDraft.sourceType,
+  ])
 
-  const clearTxFilters = () => {
-    const emptyFilters: TransactionsUiFilters = { search: '', flowType: '', sourceType: '' }
+  const applyTxPendingContext = useCallback((accountType?: 'checking' | 'credit_card') => {
+    const nextFilters: TransactionsUiFilters = {
+      ...createEmptyFilters(),
+      accountType: accountType ?? '',
+      onlyPending: true,
+    }
+    setTxFiltersDraft(nextFilters)
+    setTxFiltersApplied(nextFilters)
+  }, [])
+
+  const clearTxFilters = useCallback(() => {
+    const emptyFilters = createEmptyFilters()
     setTxFiltersDraft(emptyFilters)
     setTxFiltersApplied(emptyFilters)
-  }
+  }, [])
 
   return {
     txFiltersDraft,
@@ -99,6 +155,7 @@ export function useTransactionFilters({ periodStart, periodEnd }: UseTransaction
     setTxFlowType,
     setTxSourceType,
     applyTxFilters,
+    applyTxPendingContext,
     clearTxFilters,
   }
 }

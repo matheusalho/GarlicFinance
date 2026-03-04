@@ -45,7 +45,7 @@ NEWFILEUID:NONE
 <DTPOSTED>20250805000000[-3:BRT]</DTPOSTED>
 <TRNAMT>271.92</TRNAMT>
 <FITID>68923729-02f0-4e05-8ca3-936f180156b0</FITID>
-<MEMO>Transferência recebida pelo Pix - Matheus Gasparino Alho - •••.009.679-•• - BANCO BTG PACTUAL S.A. (0208) Agência: 20 Conta: 480667-0</MEMO>
+<MEMO>Transferência recebida pelo Pix - Pessoa Anonima - ***.***.***-** - BANCO BTG PACTUAL S.A. (0208) Agência: 20 Conta: 480667-0</MEMO>
 </STMTTRN>
 <STMTTRN>
 <TRNTYPE>DEBIT</TRNTYPE>
@@ -59,14 +59,14 @@ NEWFILEUID:NONE
 <DTPOSTED>20250807000000[-3:BRT]</DTPOSTED>
 <TRNAMT>155.49</TRNAMT>
 <FITID>6894ab2c-0612-4edc-bd6e-5a9702d8985c</FITID>
-<MEMO>Transferência recebida pelo Pix - Matheus Gasparino Alho - •••.009.679-•• - BANCO BTG PACTUAL S.A. (0208) Agência: 20 Conta: 480667-0</MEMO>
+<MEMO>Transferência recebida pelo Pix - Pessoa Anonima - ***.***.***-** - BANCO BTG PACTUAL S.A. (0208) Agência: 20 Conta: 480667-0</MEMO>
 </STMTTRN>
 <STMTTRN>
 <TRNTYPE>DEBIT</TRNTYPE>
 <DTPOSTED>20250807000000[-3:BRT]</DTPOSTED>
 <TRNAMT>-150.00</TRNAMT>
 <FITID>6894ab94-9432-4dd9-aa4c-de3222ebbc9c</FITID>
-<MEMO>Transferência enviada pelo Pix - Bruna Fernanda de Oliveira Florencio - •••.176.149-•• - NU PAGAMENTOS - IP (0260) Agência: 1 Conta: 10903131-1</MEMO>
+<MEMO>Transferência enviada pelo Pix - Bruna Fernanda de Oliveira Florencio - ***.***.***-** - NU PAGAMENTOS - IP (0260) Agência: 1 Conta: 10903131-1</MEMO>
 </STMTTRN>
 <STMTTRN>
 <TRNTYPE>CREDIT</TRNTYPE>
@@ -80,35 +80,35 @@ NEWFILEUID:NONE
 <DTPOSTED>20250807000000[-3:BRT]</DTPOSTED>
 <TRNAMT>-300.00</TRNAMT>
 <FITID>6894abb5-8b26-4d81-bd62-907e1c8f8210:reversal</FITID>
-<MEMO>Transferência enviada pelo Pix - Bruna Fernanda de Oliveira Florencio - •••.176.149-•• - NU PAGAMENTOS - IP (0260) Agência: 1 Conta: 10903131-1</MEMO>
+<MEMO>Transferência enviada pelo Pix - Bruna Fernanda de Oliveira Florencio - ***.***.***-** - NU PAGAMENTOS - IP (0260) Agência: 1 Conta: 10903131-1</MEMO>
 </STMTTRN>
 <STMTTRN>
 <TRNTYPE>CREDIT</TRNTYPE>
 <DTPOSTED>20250807000000[-3:BRT]</DTPOSTED>
 <TRNAMT>45.00</TRNAMT>
 <FITID>689502b7-3411-4ab4-aab0-bdafb60dc078</FITID>
-<MEMO>Transferência recebida pelo Pix - Bianca Dos Santos Cestari - •••.641.188-•• - BANCO BTG PACTUAL S.A. (0208) Agência: 20 Conta: 480644-7</MEMO>
+<MEMO>Transferência recebida pelo Pix - Bianca Dos Santos Cestari - ***.***.***-** - BANCO BTG PACTUAL S.A. (0208) Agência: 20 Conta: 480644-7</MEMO>
 </STMTTRN>
 <STMTTRN>
 <TRNTYPE>DEBIT</TRNTYPE>
 <DTPOSTED>20250807000000[-3:BRT]</DTPOSTED>
 <TRNAMT>-15.00</TRNAMT>
 <FITID>68951d80-8bf5-4350-9ec5-eca1ce98b005</FITID>
-<MEMO>Transferência enviada pelo Pix - Daiane Martins Barboza - •••.604.479-•• - ITAÚ UNIBANCO S.A. (0341) Agência: 109 Conta: 95916-3</MEMO>
+<MEMO>Transferência enviada pelo Pix - Daiane Martins Barboza - ***.***.***-** - ITAÚ UNIBANCO S.A. (0341) Agência: 109 Conta: 95916-3</MEMO>
 </STMTTRN>
 <STMTTRN>
 <TRNTYPE>CREDIT</TRNTYPE>
 <DTPOSTED>20250809000000[-3:BRT]</DTPOSTED>
 <TRNAMT>40.00</TRNAMT>
 <FITID>6897f820-7b50-40a1-a0ab-89fc288751b4</FITID>
-<MEMO>Transferência recebida pelo Pix - Felipe Macedo Santos Lima - •••.570.009-•• - MERCADO PAGO IP LTDA. (0323) Agência: 1 Conta: 8686871067-3</MEMO>
+<MEMO>Transferência recebida pelo Pix - Felipe Macedo Santos Lima - ***.***.***-** - MERCADO PAGO IP LTDA. (0323) Agência: 1 Conta: 8686871067-3</MEMO>
 </STMTTRN>
 <STMTTRN>
 <TRNTYPE>DEBIT</TRNTYPE>
 <DTPOSTED>20250811000000[-3:BRT]</DTPOSTED>
 <TRNAMT>-75.00</TRNAMT>
 <FITID>689a4820-641e-4e0e-9589-9bd735cc1f8e</FITID>
-<MEMO>Transferência enviada pelo Pix - ELOISA DE GOIS MACIEL - •••.093.217-•• - BCO BRADESCO S.A. (0237) Agência: 53 Conta: 400232-6</MEMO>
+<MEMO>Transferência enviada pelo Pix - ELOISA DE GOIS MACIEL - ***.***.***-** - BCO BRADESCO S.A. (0237) Agência: 53 Conta: 400232-6</MEMO>
 </STMTTRN>
 <STMTTRN>
 <TRNTYPE>CREDIT</TRNTYPE>
@@ -122,7 +122,7 @@ NEWFILEUID:NONE
 <DTPOSTED>20250811000000[-3:BRT]</DTPOSTED>
 <TRNAMT>-125.00</TRNAMT>
 <FITID>689a4840-0508-4059-a438-4277e73281ea:reversal</FITID>
-<MEMO>Transferência enviada pelo Pix - ELOISA DE GOIS MACIEL - •••.093.217-•• - BCO BRADESCO S.A. (0237) Agência: 53 Conta: 400232-6</MEMO>
+<MEMO>Transferência enviada pelo Pix - ELOISA DE GOIS MACIEL - ***.***.***-** - BCO BRADESCO S.A. (0237) Agência: 53 Conta: 400232-6</MEMO>
 </STMTTRN>
 <STMTTRN>
 <TRNTYPE>CREDIT</TRNTYPE>
@@ -136,7 +136,7 @@ NEWFILEUID:NONE
 <DTPOSTED>20250813000000[-3:BRT]</DTPOSTED>
 <TRNAMT>-300.00</TRNAMT>
 <FITID>689c974d-255a-478b-8745-2f9a1c745805:reversal</FITID>
-<MEMO>Transferência enviada pelo Pix - VITOR OLIVEIRA TAVARES - •••.479.239-•• - BCO DO BRASIL S.A. (0001) Agência: 108 Conta: 133413-1</MEMO>
+<MEMO>Transferência enviada pelo Pix - VITOR OLIVEIRA TAVARES - ***.***.***-** - BCO DO BRASIL S.A. (0001) Agência: 108 Conta: 133413-1</MEMO>
 </STMTTRN>
 <STMTTRN>
 <TRNTYPE>CREDIT</TRNTYPE>
@@ -150,7 +150,7 @@ NEWFILEUID:NONE
 <DTPOSTED>20250813000000[-3:BRT]</DTPOSTED>
 <TRNAMT>-200.00</TRNAMT>
 <FITID>689c9787-5624-4916-82e9-fbb4aa381305:reversal</FITID>
-<MEMO>Transferência enviada pelo Pix - CLAUDIO MARTINS PRUDENCIO - •••.300.889-•• - CAIXA ECONOMICA FEDERAL (0104) Agência: 873 Conta: 1288000000812391764-1</MEMO>
+<MEMO>Transferência enviada pelo Pix - CLAUDIO MARTINS PRUDENCIO - ***.***.***-** - CAIXA ECONOMICA FEDERAL (0104) Agência: 873 Conta: 1288000000812391764-1</MEMO>
 </STMTTRN>
 <STMTTRN>
 <TRNTYPE>CREDIT</TRNTYPE>
@@ -164,7 +164,7 @@ NEWFILEUID:NONE
 <DTPOSTED>20250813000000[-3:BRT]</DTPOSTED>
 <TRNAMT>-410.00</TRNAMT>
 <FITID>689c97fd-b46d-461d-adad-076d665b488b:reversal</FITID>
-<MEMO>Transferência enviada pelo Pix - CLOVIS APARECIDO DA SILVA - •••.953.211-•• - ITAÚ UNIBANCO S.A. (0341) Agência: 1679 Conta: 22416-0</MEMO>
+<MEMO>Transferência enviada pelo Pix - CLOVIS APARECIDO DA SILVA - ***.***.***-** - ITAÚ UNIBANCO S.A. (0341) Agência: 1679 Conta: 22416-0</MEMO>
 </STMTTRN>
 <STMTTRN>
 <TRNTYPE>CREDIT</TRNTYPE>
@@ -178,7 +178,7 @@ NEWFILEUID:NONE
 <DTPOSTED>20250814000000[-3:BRT]</DTPOSTED>
 <TRNAMT>-240.00</TRNAMT>
 <FITID>689dd903-33e7-4351-b2c4-7f0b5c16f9de:reversal</FITID>
-<MEMO>Transferência enviada pelo Pix - Larah N Ferreira - •••.321.099-•• - NU PAGAMENTOS - IP (0260) Agência: 1 Conta: 70647759-7</MEMO>
+<MEMO>Transferência enviada pelo Pix - Larah N Ferreira - ***.***.***-** - NU PAGAMENTOS - IP (0260) Agência: 1 Conta: 70647759-7</MEMO>
 </STMTTRN>
 <STMTTRN>
 <TRNTYPE>CREDIT</TRNTYPE>
@@ -192,42 +192,42 @@ NEWFILEUID:NONE
 <DTPOSTED>20250814000000[-3:BRT]</DTPOSTED>
 <TRNAMT>-250.00</TRNAMT>
 <FITID>689e3c9c-2a99-4c5b-91fa-cdcb31c4c524:reversal</FITID>
-<MEMO>Transferência enviada pelo Pix - Saulo Charello Medeiros - •••.884.259-•• - NU PAGAMENTOS - IP (0260) Agência: 1 Conta: 86692505-6</MEMO>
+<MEMO>Transferência enviada pelo Pix - Saulo Charello Medeiros - ***.***.***-** - NU PAGAMENTOS - IP (0260) Agência: 1 Conta: 86692505-6</MEMO>
 </STMTTRN>
 <STMTTRN>
 <TRNTYPE>CREDIT</TRNTYPE>
 <DTPOSTED>20250815000000[-3:BRT]</DTPOSTED>
 <TRNAMT>29.15</TRNAMT>
 <FITID>689ff333-2a92-4e1d-8ca9-d340aab496f2</FITID>
-<MEMO>Transferência Recebida - Douglas Ribeiro Souto Junior - •••.477.509-•• - NU PAGAMENTOS - IP (0260) Agência: 1 Conta: 1322181-3</MEMO>
+<MEMO>Transferência Recebida - Douglas Ribeiro Souto Junior - ***.***.***-** - NU PAGAMENTOS - IP (0260) Agência: 1 Conta: 1322181-3</MEMO>
 </STMTTRN>
 <STMTTRN>
 <TRNTYPE>CREDIT</TRNTYPE>
 <DTPOSTED>20250815000000[-3:BRT]</DTPOSTED>
 <TRNAMT>29.15</TRNAMT>
 <FITID>689ff33f-828e-4185-a523-fdc1b29e6db1</FITID>
-<MEMO>Transferência recebida pelo Pix - VITORIA GABRIELY DA SILVA - •••.718.699-•• - BCO DO BRASIL S.A. (0001) Agência: 1765 Conta: 14819-9</MEMO>
+<MEMO>Transferência recebida pelo Pix - VITORIA GABRIELY DA SILVA - ***.***.***-** - BCO DO BRASIL S.A. (0001) Agência: 1765 Conta: 14819-9</MEMO>
 </STMTTRN>
 <STMTTRN>
 <TRNTYPE>CREDIT</TRNTYPE>
 <DTPOSTED>20250815000000[-3:BRT]</DTPOSTED>
 <TRNAMT>39.15</TRNAMT>
 <FITID>689ff359-970e-4b9c-af3b-4744f04ea31c</FITID>
-<MEMO>Transferência Recebida - Renan Vinícius de Souza Vindoca - •••.830.369-•• - NU PAGAMENTOS - IP (0260) Agência: 1 Conta: 59544553-9</MEMO>
+<MEMO>Transferência Recebida - Renan Vinícius de Souza Vindoca - ***.***.***-** - NU PAGAMENTOS - IP (0260) Agência: 1 Conta: 59544553-9</MEMO>
 </STMTTRN>
 <STMTTRN>
 <TRNTYPE>CREDIT</TRNTYPE>
 <DTPOSTED>20250815000000[-3:BRT]</DTPOSTED>
 <TRNAMT>58.30</TRNAMT>
 <FITID>689ff3aa-6af9-4aee-b35a-966737eb6725</FITID>
-<MEMO>Transferência recebida pelo Pix - RICARDO HENRIQUE DE OLIVEIRA - •••.109.759-•• - ITAÚ UNIBANCO S.A. (0341) Agência: 88 Conta: 36658-8</MEMO>
+<MEMO>Transferência recebida pelo Pix - RICARDO HENRIQUE DE OLIVEIRA - ***.***.***-** - ITAÚ UNIBANCO S.A. (0341) Agência: 88 Conta: 36658-8</MEMO>
 </STMTTRN>
 <STMTTRN>
 <TRNTYPE>CREDIT</TRNTYPE>
 <DTPOSTED>20250818000000[-3:BRT]</DTPOSTED>
 <TRNAMT>35.00</TRNAMT>
 <FITID>68a32597-03e5-403a-aa8c-3115edb3e718</FITID>
-<MEMO>Transferência recebida pelo Pix - GIOVANA DINIZ - •••.780.579-•• - BCO DO BRASIL S.A. (0001) Agência: 4891 Conta: 50300-2</MEMO>
+<MEMO>Transferência recebida pelo Pix - GIOVANA DINIZ - ***.***.***-** - BCO DO BRASIL S.A. (0001) Agência: 4891 Conta: 50300-2</MEMO>
 </STMTTRN>
 <STMTTRN>
 <TRNTYPE>DEBIT</TRNTYPE>
@@ -241,7 +241,7 @@ NEWFILEUID:NONE
 <DTPOSTED>20250827000000[-3:BRT]</DTPOSTED>
 <TRNAMT>50.00</TRNAMT>
 <FITID>68afab12-d9da-49c6-ab4f-0364d3660eb6</FITID>
-<MEMO>Transferência Recebida - Caroline Santos Correia - •••.329.749-•• - NU PAGAMENTOS - IP (0260) Agência: 1 Conta: 92700910-0</MEMO>
+<MEMO>Transferência Recebida - Caroline Santos Correia - ***.***.***-** - NU PAGAMENTOS - IP (0260) Agência: 1 Conta: 92700910-0</MEMO>
 </STMTTRN>
 </BANKTRANLIST>
 <LEDGERBAL>

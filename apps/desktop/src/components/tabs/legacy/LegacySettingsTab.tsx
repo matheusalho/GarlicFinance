@@ -1,6 +1,12 @@
-﻿import type { FormEvent } from 'react'
+import type { FormEvent } from 'react'
 
-import type { CategoryTreeItem } from '../../../types'
+import { brl, shortDate } from '../../../lib/format'
+import type {
+  AppEventLogItem,
+  CategoryTreeItem,
+  CategorizationRuleItem,
+  RulesDryRunResponse,
+} from '../../../types'
 
 interface CategoryOption {
   id: string
@@ -49,6 +55,24 @@ interface SettingsTabProps {
   onSubcategoryDraftCategoryChange: (subcategoryId: string, value: string) => void
   onSubcategoryDraftNameChange: (subcategoryId: string, value: string) => void
   onSaveSubcategory: (subcategoryId: string) => void
+  rules: CategorizationRuleItem[]
+  rulesDryRun: RulesDryRunResponse | null
+  onRuleUpsert: (draft: {
+    id?: number
+    sourceType: string
+    direction: '' | 'income' | 'expense'
+    merchantPattern: string
+    amountMinCents: number | null
+    amountMaxCents: number | null
+    categoryId: string
+    subcategoryId: string
+    confidence: number
+  }) => Promise<void>
+  onRuleDelete: (ruleId: number) => Promise<void>
+  onRuleDryRun: () => Promise<void>
+  onRuleApplyBatch: () => Promise<void>
+  errorTrail?: AppEventLogItem[]
+  onRefreshErrorTrail?: () => void
 }
 
 export function LegacySettingsTab({
@@ -87,7 +111,27 @@ export function LegacySettingsTab({
   onSubcategoryDraftCategoryChange,
   onSubcategoryDraftNameChange,
   onSaveSubcategory,
+  rules,
+  rulesDryRun,
+  onRuleDelete,
+  onRuleDryRun,
+  onRuleApplyBatch,
+  errorTrail,
+  onRefreshErrorTrail,
 }: SettingsTabProps) {
+  const recentErrors = errorTrail ?? []
+
+  const handleDeleteRule = async (rule: CategorizationRuleItem) => {
+    const descriptor =
+      rule.merchantPattern.trim() || `${rule.categoryName}${rule.subcategoryName ? ` / ${rule.subcategoryName}` : ''}`
+    const message = `Excluir a regra "${descriptor}"? Esta ação não pode ser desfeita.`
+    if (typeof window !== 'undefined' && typeof window.confirm === 'function' && !window.confirm(message)) {
+      return
+    }
+
+    await onRuleDelete(rule.id)
+  }
+
   return (
     <>
       <section className="panel grid two">
@@ -155,6 +199,26 @@ export function LegacySettingsTab({
           </div>
           {passwordTestMessage && (
             <p className={passwordTestOk ? 'feedback ok' : 'feedback error'}>{passwordTestMessage}</p>
+          )}
+          <div className="inline-actions">
+            <button type="button" className="ghost" disabled={loading} onClick={() => onRefreshErrorTrail?.()}>
+              Atualizar trilha de erros
+            </button>
+          </div>
+          {recentErrors.length === 0 ? (
+            <p className="empty">Nenhum erro recente registrado localmente.</p>
+          ) : (
+            <ul className="manager-list">
+              {recentErrors.map((item) => (
+                <li key={item.id} className="manager-item manager-item-wide">
+                  <strong>{item.eventType}</strong>
+                  <small>
+                    {shortDate(item.createdAt)} · {item.level.toUpperCase()} · {item.scope}
+                  </small>
+                  <small>{item.message}</small>
+                </li>
+              ))}
+            </ul>
           )}
         </article>
       </section>
@@ -257,6 +321,93 @@ export function LegacySettingsTab({
             {allSubcategories.length === 0 && <li className="empty">Nenhuma subcategoria cadastrada.</li>}
           </ul>
         </article>
+      </section>
+
+      <section className="panel">
+        <h2>Regras de categorização</h2>
+        <div className="inline-actions">
+          <button disabled={loading} type="button" className="ghost" onClick={() => void onRuleDryRun()}>
+            Simular dry-run
+          </button>
+          <button disabled={loading} type="button" onClick={() => void onRuleApplyBatch()}>
+            Aplicar em lote
+          </button>
+        </div>
+        {rulesDryRun && (
+          <p role="status" aria-live="polite">
+            Simulação atual: <strong>{rulesDryRun.matchedCount}</strong> transações elegíveis.
+          </p>
+        )}
+        <div className="table-wrap">
+          <table className="data-table">
+            <caption className="gf-sr-only">Regras de categorização cadastradas</caption>
+            <thead>
+              <tr>
+                <th scope="col">Condição</th>
+                <th scope="col">Destino</th>
+                <th scope="col">Uso</th>
+                <th scope="col">Ações</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rules.map((rule) => (
+                <tr key={rule.id}>
+                  <td>
+                    <strong>{rule.merchantPattern || 'Sem padrão textual'}</strong>
+                    <small>
+                      Fonte: {rule.sourceType || 'todas'} · Direção: {rule.direction || 'todas'}
+                    </small>
+                  </td>
+                  <td>
+                    {rule.categoryName}
+                    {rule.subcategoryName ? ` / ${rule.subcategoryName}` : ''}
+                  </td>
+                  <td>{rule.usageCount}</td>
+                  <td>
+                    <button type="button" className="ghost" onClick={() => void handleDeleteRule(rule)}>
+                      Excluir
+                    </button>
+                  </td>
+                </tr>
+              ))}
+              {rules.length === 0 && (
+                <tr>
+                  <td colSpan={4} className="empty">
+                    Nenhuma regra cadastrada.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+        {rulesDryRun && rulesDryRun.sample.length > 0 && (
+          <div className="table-wrap">
+            <table className="data-table">
+              <caption className="gf-sr-only">Amostra de transações para dry-run de regras</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Data</th>
+                  <th scope="col">Descrição</th>
+                  <th scope="col">Valor</th>
+                  <th scope="col">Destino</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rulesDryRun.sample.map((item) => (
+                  <tr key={`${item.transactionId}-${item.ruleId}`}>
+                    <td>{shortDate(item.occurredAt)}</td>
+                    <td>{item.descriptionRaw}</td>
+                    <td>{brl(item.amountCents)}</td>
+                    <td>
+                      {item.categoryName}
+                      {item.subcategoryName ? ` / ${item.subcategoryName}` : ''}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </section>
     </>
   )

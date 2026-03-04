@@ -1,0 +1,104 @@
+name: CI V0.7.0 Quality Gates
+
+on:
+  pull_request:
+  push:
+    branches:
+      - "**"
+
+jobs:
+  frontend-quality:
+    name: Frontend Quality
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm --workspace apps/desktop run typecheck
+
+      - name: Lint
+        run: npm --workspace apps/desktop run lint
+
+      - name: Unit tests
+        run: npm --workspace apps/desktop run test
+
+      - name: Build
+        run: npm --workspace apps/desktop run build
+
+      - name: RC security hardening check
+        run: npm --workspace apps/desktop run security:check:rc
+
+  smoke-v16:
+    name: Smoke E2E V1.6
+    runs-on: ubuntu-latest
+    needs: frontend-quality
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Run V1.6 smoke
+        run: npm --workspace apps/desktop run smoke:e2e:v16
+
+      - name: Upload smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-v16-artifacts
+          path: output/playwright/v16-smoke
+          if-no-files-found: warn
+          retention-days: 7
+
+  rust-tests:
+    name: Rust DB/Commands Tests
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cargo test
+        run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
+
+  importer-tests:
+    name: Importer Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install importer dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r services/importer/requirements.txt pytest
+
+      - name: Run importer tests
+        run: pytest services/importer/tests -q

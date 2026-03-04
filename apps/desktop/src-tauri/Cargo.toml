@@ -1,6 +1,6 @@
 [package]
 name = "garlic-finance-desktop"
-version = "0.1.0"
+version = "1.0.0"
 description = "GarlicFinance desktop app"
 edition = "2021"
 authors = ["GarlicFinance"]
@@ -23,3 +23,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "2", features = [] }
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security_Credentials"] }
+
+[dev-dependencies]
+tempfile = "3"

@@ -282,6 +282,16 @@ button:disabled {
   width: 100%;
 }
 
+.data-table tr.is-selected {
+  background: #f2f7ff;
+}
+
+.data-table tbody tr[tabindex]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  background: #eef4ff;
+}
+
 .goal-form {
   display: flex;
   flex-direction: column;

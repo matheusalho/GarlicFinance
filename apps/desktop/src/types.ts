@@ -49,6 +49,48 @@ export interface TransactionTotals {
 export interface TransactionsListResponse {
   items: TransactionItem[]
   totals: TransactionTotals
+  totalCount: number
+}
+
+export interface TransactionsReviewQueueResponse {
+  items: TransactionItem[]
+  totalCount: number
+}
+
+export interface CategorizationRuleItem {
+  id: number
+  sourceType: string
+  direction: '' | 'income' | 'expense'
+  merchantPattern: string
+  amountMinCents: number | null
+  amountMaxCents: number | null
+  categoryId: string
+  categoryName: string
+  subcategoryId: string
+  subcategoryName: string
+  confidence: number
+  usageCount: number
+  updatedAt: string
+}
+
+export interface RuleDryRunItem {
+  transactionId: number
+  occurredAt: string
+  sourceType: string
+  flowType: 'income' | 'expense'
+  amountCents: number
+  descriptionRaw: string
+  ruleId: number
+  score: number
+  categoryId: string
+  categoryName: string
+  subcategoryId: string
+  subcategoryName: string
+}
+
+export interface RulesDryRunResponse {
+  matchedCount: number
+  sample: RuleDryRunItem[]
 }
 
 export interface SubcategoryItem {
@@ -101,6 +143,14 @@ export interface GoalListItem {
   allocationPercent: number
 }
 
+export type ProjectionScenario = 'base' | 'optimistic' | 'pessimistic'
+
+export interface GoalAllocationItem {
+  goalId: number
+  scenario: ProjectionScenario
+  allocationPercent: number
+}
+
 export interface ProjectionMonth {
   month: string
   incomeCents: number
@@ -121,6 +171,65 @@ export interface GoalProjectionProgress {
 export interface ProjectionResponse {
   monthlyProjection: ProjectionMonth[]
   goalProgress: GoalProjectionProgress[]
+}
+
+export type BudgetAlertLevel = 'ok' | 'warning' | 'exceeded'
+
+export interface MonthlyBudgetItem {
+  id: number
+  month: string
+  categoryId: string
+  categoryName: string
+  subcategoryId: string
+  subcategoryName: string
+  limitCents: number
+  spentCents: number
+  remainingCents: number
+  usagePercent: number
+  alertLevel: BudgetAlertLevel
+}
+
+export interface MonthlyBudgetSummaryResponse {
+  month: string
+  limitTotalCents: number
+  spentTotalCents: number
+  remainingTotalCents: number
+  usagePercent: number
+  alertLevel: BudgetAlertLevel
+  items: MonthlyBudgetItem[]
+}
+
+export type ReconciliationStatus = 'ok' | 'warning' | 'divergent' | 'no_snapshot'
+
+export interface ReconciliationAccountItem {
+  accountType: string
+  label: string
+  snapshotCents: number | null
+  snapshotAt: string
+  reconstructedCents: number
+  estimatedCents: number
+  divergenceCents: number | null
+  periodNetCents: number
+  pendingReviewCount: number
+  status: ReconciliationStatus
+}
+
+export interface ReconciliationSummaryResponse {
+  periodStart: string
+  periodEnd: string
+  accounts: ReconciliationAccountItem[]
+}
+
+export type AppEventLevel = 'info' | 'warn' | 'error'
+
+export interface AppEventLogItem {
+  id: number
+  createdAt: string
+  level: AppEventLevel
+  eventType: string
+  scope: string
+  message: string
+  contextJson: string
 }
 
 export interface RecurringTemplateItem {

@@ -17,24 +17,33 @@ import { useTransactionFilters } from './hooks/useTransactionFilters'
 import { dateInputFromNow } from './lib/format'
 import { commands } from './lib/tauri'
 import type {
+  AppEventLogItem,
+  CategorizationRuleItem,
   CategoryTreeItem,
   DashboardSummaryResponse,
   FeatureFlagsV1,
+  GoalAllocationItem,
   GoalListItem,
+  MonthlyBudgetSummaryResponse,
   OnboardingStateV1,
+  ProjectionScenario,
   ProjectionResponse,
+  ReconciliationSummaryResponse,
   RecurringTemplateItem,
+  RulesDryRunResponse,
   TransactionItem,
   TransactionsListResponse,
+  TransactionsReviewQueueResponse,
   UiPreferencesV1,
 } from './types'
 
 type BasisMode = 'purchase' | 'cashflow'
 type TabId = 'dashboard' | 'transactions' | 'planning' | 'settings'
-type ProjectionScenario = 'base' | 'optimistic' | 'pessimistic'
+type PlanningSectionHint = 'extra' | 'recurring' | 'budget' | 'goals' | 'projection'
 
-const DEFAULT_BASE_PATH = 'C:\\Projetos\\GarlicFinance\\ArquivosFinance'
+const DEFAULT_BASE_PATH = ''
 const DEFAULT_CATEGORY_COLOR = '#6f7d8c'
+const DEFAULT_TRANSACTIONS_PAGE_SIZE = 10
 
 const DEFAULT_UI_PREFERENCES: UiPreferencesV1 = {
   theme: 'light',
@@ -90,6 +99,13 @@ const TABS: Array<{ id: TabId; label: string; description: string }> = [
   { id: 'settings', label: 'Configurações', description: 'Importação, segurança e preferências.' },
 ]
 
+const PROJECTION_SCENARIOS: ProjectionScenario[] = ['base', 'optimistic', 'pessimistic']
+const SCENARIO_LABELS: Record<ProjectionScenario, string> = {
+  base: 'Base',
+  optimistic: 'Otimista',
+  pessimistic: 'Pessimista',
+}
+
 const parseMoneyToCents = (rawValue: string): number | null => {
   const trimmed = rawValue.trim()
   if (!trimmed) return null
@@ -105,8 +121,55 @@ const parseMoneyToCents = (rawValue: string): number | null => {
 const flowLabel = (flowType: string): string =>
   FLOW_OPTIONS.find((item) => item.id === flowType)?.label ?? flowType
 
+const formatPercentInput = (value: number): string => {
+  if (!Number.isFinite(value)) return '0'
+  const rounded = Math.round(value * 100) / 100
+  return Number.isInteger(rounded) ? String(rounded) : String(rounded)
+}
+
+const parsePercentInput = (rawValue: string): number | null => {
+  const trimmed = rawValue.trim()
+  if (!trimmed) return null
+  const normalized = trimmed.replace(',', '.')
+  const parsed = Number(normalized)
+  if (!Number.isFinite(parsed)) return null
+  return Math.max(0, Math.min(100, parsed))
+}
+
+const buildGoalAllocationDrafts = (
+  goals: GoalListItem[],
+  scenarioAllocations: Record<ProjectionScenario, GoalAllocationItem[]>,
+): Record<ProjectionScenario, Record<number, string>> => {
+  const base: Record<number, string> = {}
+  const optimistic: Record<number, string> = {}
+  const pessimistic: Record<number, string> = {}
+
+  const scenarioMaps = {
+    base: new Map(scenarioAllocations.base.map((item) => [item.goalId, item.allocationPercent])),
+    optimistic: new Map(
+      scenarioAllocations.optimistic.map((item) => [item.goalId, item.allocationPercent]),
+    ),
+    pessimistic: new Map(
+      scenarioAllocations.pessimistic.map((item) => [item.goalId, item.allocationPercent]),
+    ),
+  }
+
+  for (const goal of goals) {
+    const baseValue = scenarioMaps.base.get(goal.id) ?? goal.allocationPercent
+    const optimisticValue = scenarioMaps.optimistic.get(goal.id) ?? baseValue
+    const pessimisticValue = scenarioMaps.pessimistic.get(goal.id) ?? baseValue
+
+    base[goal.id] = formatPercentInput(baseValue)
+    optimistic[goal.id] = formatPercentInput(optimisticValue)
+    pessimistic[goal.id] = formatPercentInput(pessimisticValue)
+  }
+
+  return { base, optimistic, pessimistic }
+}
+
 function App() {
   const [activeTab, setActiveTab] = useState<TabId>('dashboard')
+  const [planningSectionHint, setPlanningSectionHint] = useState<PlanningSectionHint | undefined>(undefined)
   const [showOnboarding, setShowOnboarding] = useState(true)
   const [basePath, setBasePath] = useState(DEFAULT_BASE_PATH)
   const [periodStart, setPeriodStart] = useState(dateInputFromNow(-90))
@@ -122,6 +185,7 @@ function App() {
     setTxFlowType,
     setTxSourceType,
     applyTxFilters,
+    applyTxPendingContext,
     clearTxFilters,
   } = useTransactionFilters({ periodStart, periodEnd })
 
@@ -138,17 +202,43 @@ function App() {
   const [transactions, setTransactions] = useState<TransactionsListResponse>({
     items: [],
     totals: { incomeCents: 0, expenseCents: 0, netCents: 0 },
+    totalCount: 0,
+  })
+  const [reviewQueue, setReviewQueue] = useState<TransactionsReviewQueueResponse>({
+    items: [],
+    totalCount: 0,
   })
   const [categories, setCategories] = useState<CategoryTreeItem[]>([])
   const [goals, setGoals] = useState<GoalListItem[]>([])
+  const [goalAllocationDrafts, setGoalAllocationDrafts] = useState<
+    Record<ProjectionScenario, Record<number, string>>
+  >({
+    base: {},
+    optimistic: {},
+    pessimistic: {},
+  })
   const [projection, setProjection] = useState<ProjectionResponse | null>(null)
   const [projectionScenario, setProjectionScenario] = useState<ProjectionScenario | null>(null)
+  const [monthlyBudgetSummary, setMonthlyBudgetSummary] =
+    useState<MonthlyBudgetSummaryResponse | null>(null)
+  const [reconciliation, setReconciliation] = useState<ReconciliationSummaryResponse | null>(null)
   const [recurringTemplates, setRecurringTemplates] = useState<RecurringTemplateItem[]>([])
+  const [rules, setRules] = useState<CategorizationRuleItem[]>([])
+  const [rulesDryRun, setRulesDryRun] = useState<RulesDryRunResponse | null>(null)
+  const [errorTrail, setErrorTrail] = useState<AppEventLogItem[]>([])
   const didAutoImport = useRef(false)
   const transactionsRef = useRef<TransactionsListResponse>({
     items: [],
     totals: { incomeCents: 0, expenseCents: 0, netCents: 0 },
+    totalCount: 0,
   })
+  const reviewQueueRef = useRef<TransactionsReviewQueueResponse>({
+    items: [],
+    totalCount: 0,
+  })
+  const goalsRef = useRef<GoalListItem[]>([])
+  const [transactionsPage, setTransactionsPage] = useState(1)
+  const [transactionsPageSize, setTransactionsPageSize] = useState(DEFAULT_TRANSACTIONS_PAGE_SIZE)
 
   const [btgPasswordInput, setBtgPasswordInput] = useState('')
   const [passwordTestMessage, setPasswordTestMessage] = useState('')
@@ -160,6 +250,10 @@ function App() {
   const [goalDate, setGoalDate] = useState(dateInputFromNow(365))
   const [goalHorizon, setGoalHorizon] = useState<'short' | 'medium' | 'long'>('short')
   const [goalAllocation, setGoalAllocation] = useState('20')
+  const [budgetMonthInput, setBudgetMonthInput] = useState(() => dateInputFromNow(0).slice(0, 7))
+  const [budgetCategory, setBudgetCategory] = useState('alimentacao')
+  const [budgetSubcategory, setBudgetSubcategory] = useState('')
+  const [budgetLimit, setBudgetLimit] = useState('')
 
   const [manualDate, setManualDate] = useState(dateInputFromNow(0))
   const [manualDescription, setManualDescription] = useState('')
@@ -205,10 +299,17 @@ function App() {
     return 'neutral'
   }, [statusMessage])
 
-  const uncategorizedCount = useMemo(
-    () => transactions.items.filter((item) => item.needsReview).length,
-    [transactions.items],
+  const uncategorizedCount = useMemo(() => reviewQueue.totalCount, [reviewQueue.totalCount])
+
+  const transactionsRequestFilters = useMemo(
+    () => ({
+      ...transactionQueryFilters,
+      limit: transactionsPageSize,
+      offset: (transactionsPage - 1) * transactionsPageSize,
+    }),
+    [transactionQueryFilters, transactionsPage, transactionsPageSize],
   )
+  const budgetMonth = useMemo(() => periodEnd.slice(0, 7), [periodEnd])
 
   const findCategoryName = useCallback(
     (categoryId: string) => categories.find((category) => category.id === categoryId)?.name ?? '',
@@ -269,17 +370,70 @@ function App() {
     [featureFlags],
   )
 
+  const openPlanningSection = useCallback((section: PlanningSectionHint) => {
+    setPlanningSectionHint(section)
+    setActiveTab('planning')
+  }, [])
+
+  const openTransactionsReview = useCallback(() => {
+    applyTxPendingContext()
+    setTransactionsPage(1)
+    setActiveTab('transactions')
+  }, [applyTxPendingContext])
+
+  const openTransactionsReviewByAccount = useCallback(
+    (accountType: string) => {
+      const normalizedAccountType = accountType === 'credit_card' ? 'credit_card' : 'checking'
+      applyTxPendingContext(normalizedAccountType)
+      setTransactionsPage(1)
+      setActiveTab('transactions')
+    },
+    [applyTxPendingContext],
+  )
+
   const refreshTransactionsOnly = useCallback(async () => {
-    setTransactions(await commands.transactionsList(transactionQueryFilters))
+    setTransactions(await commands.transactionsList(transactionsRequestFilters))
+  }, [transactionsRequestFilters])
+
+  const refreshReviewQueueOnly = useCallback(async () => {
+    setReviewQueue(await commands.transactionsReviewQueue(transactionQueryFilters, 160))
   }, [transactionQueryFilters])
 
   const refreshDashboardOnly = useCallback(async () => {
     setDashboard(await commands.dashboardSummary({ periodStart, periodEnd, basis }))
   }, [basis, periodEnd, periodStart])
 
-  const refreshGoalsOnly = useCallback(async () => {
-    setGoals(await commands.goalsList())
+  const refreshBudgetOnly = useCallback(async () => {
+    const month = (budgetMonthInput.trim() || budgetMonth).slice(0, 7)
+    if (!month) {
+      setMonthlyBudgetSummary(null)
+      return
+    }
+    setMonthlyBudgetSummary(await commands.budgetSummary(month))
+  }, [budgetMonth, budgetMonthInput])
+
+  const refreshReconciliationOnly = useCallback(async () => {
+    setReconciliation(await commands.reconciliationSummary({ periodStart, periodEnd }))
+  }, [periodEnd, periodStart])
+
+  const refreshGoalAllocationsOnly = useCallback(async (nextGoals: GoalListItem[]) => {
+    const [base, optimistic, pessimistic] = await Promise.all(
+      PROJECTION_SCENARIOS.map((scenario) => commands.goalAllocationList(scenario)),
+    )
+    setGoalAllocationDrafts(
+      buildGoalAllocationDrafts(nextGoals, {
+        base,
+        optimistic,
+        pessimistic,
+      }),
+    )
   }, [])
+
+  const refreshGoalsOnly = useCallback(async () => {
+    const goalsData = await commands.goalsList()
+    setGoals(goalsData)
+    await refreshGoalAllocationsOnly(goalsData)
+  }, [refreshGoalAllocationsOnly])
 
   const refreshCategoriesOnly = useCallback(async () => {
     setCategories(await commands.categoriesList())
@@ -289,44 +443,153 @@ function App() {
     setRecurringTemplates(await commands.recurringTemplateList())
   }, [])
 
+  const refreshRulesOnly = useCallback(async () => {
+    setRules(await commands.rulesList())
+  }, [])
+
+  const refreshErrorTrailOnly = useCallback(async () => {
+    setErrorTrail(await commands.observabilityErrorTrail(40))
+  }, [])
+
   const refreshProjectionIfLoaded = useCallback(async () => {
     if (!projectionScenario) return
     setProjection(await commands.projectionRun({ scenario: projectionScenario, monthsAhead: 24 }))
   }, [projectionScenario])
 
-  const refreshData = useCallback(async () => {
+  const refreshPrimaryData = useCallback(async () => {
     setLoading(true)
     try {
-      const [dashboardData, txData, goalsData, categoriesData, recurringData] = await Promise.all([
+      const [dashboardData, txData, reviewQueueData, reconciliationData] = await Promise.all([
         commands.dashboardSummary({ periodStart, periodEnd, basis }),
-        commands.transactionsList(transactionQueryFilters),
-        commands.goalsList(),
-        commands.categoriesList(),
-        commands.recurringTemplateList(),
+        commands.transactionsList(transactionsRequestFilters),
+        commands.transactionsReviewQueue(transactionQueryFilters, 160),
+        commands.reconciliationSummary({ periodStart, periodEnd }),
       ])
       setDashboard(dashboardData)
       setTransactions(txData)
-      setGoals(goalsData)
-      setCategories(categoriesData)
-      setRecurringTemplates(recurringData)
+      setReviewQueue(reviewQueueData)
+      setReconciliation(reconciliationData)
     } catch (error) {
       setStatusMessage(`Falha ao atualizar dados: ${String(error)}`)
     } finally {
       setLoading(false)
     }
-  }, [basis, periodEnd, periodStart, transactionQueryFilters])
+  }, [basis, periodEnd, periodStart, transactionQueryFilters, transactionsRequestFilters])
+
+  const refreshReferenceData = useCallback(async () => {
+    const month = (budgetMonthInput.trim() || budgetMonth).slice(0, 7)
+    try {
+      const [
+        goalsData,
+        categoriesData,
+        recurringData,
+        rulesData,
+        baseAllocations,
+        optimisticAllocations,
+        pessimisticAllocations,
+        budgetSummaryData,
+        errorTrailData,
+      ] = await Promise.all([
+        commands.goalsList(),
+        commands.categoriesList(),
+        commands.recurringTemplateList(),
+        commands.rulesList(),
+        commands.goalAllocationList('base'),
+        commands.goalAllocationList('optimistic'),
+        commands.goalAllocationList('pessimistic'),
+        commands.budgetSummary(month),
+        commands.observabilityErrorTrail(40),
+      ])
+      setGoals(goalsData)
+      setCategories(categoriesData)
+      setRecurringTemplates(recurringData)
+      setRules(rulesData)
+      setMonthlyBudgetSummary(budgetSummaryData)
+      setErrorTrail(errorTrailData)
+      setGoalAllocationDrafts(
+        buildGoalAllocationDrafts(goalsData, {
+          base: baseAllocations,
+          optimistic: optimisticAllocations,
+          pessimistic: pessimisticAllocations,
+        }),
+      )
+    } catch (error) {
+      setStatusMessage(`Falha ao atualizar catálogos: ${String(error)}`)
+    }
+  }, [budgetMonth, budgetMonthInput])
 
   useEffect(() => {
-    void refreshData()
-  }, [refreshData])
+    void refreshPrimaryData()
+  }, [refreshPrimaryData])
+
+  useEffect(() => {
+    void refreshReferenceData()
+  }, [refreshReferenceData])
+
+  useEffect(() => {
+    if (statusTone !== 'error') return
+    void refreshErrorTrailOnly()
+  }, [refreshErrorTrailOnly, statusMessage, statusTone])
 
   useEffect(() => {
     transactionsRef.current = transactions
   }, [transactions])
 
   useEffect(() => {
+    reviewQueueRef.current = reviewQueue
+  }, [reviewQueue])
+
+  useEffect(() => {
+    const totalPages = Math.max(1, Math.ceil(transactions.totalCount / transactionsPageSize))
+    if (transactionsPage > totalPages) {
+      setTransactionsPage(totalPages)
+    }
+  }, [transactions.totalCount, transactionsPage, transactionsPageSize])
+
+  useEffect(() => {
+    goalsRef.current = goals
+  }, [goals])
+
+  useEffect(() => {
+    setTransactionsPage((previous) => (previous === 1 ? previous : 1))
+  }, [
+    periodStart,
+    periodEnd,
+    transactionQueryFilters.accountType,
+    transactionQueryFilters.flowType,
+    transactionQueryFilters.onlyPending,
+    transactionQueryFilters.search,
+    transactionQueryFilters.sourceType,
+  ])
+
+  useEffect(() => {
     setTxSearch(globalSearch)
   }, [globalSearch, setTxSearch])
+
+  useEffect(() => {
+    setBudgetMonthInput((previous) => (previous === budgetMonth ? previous : budgetMonth))
+  }, [budgetMonth])
+
+  useEffect(() => {
+    if (categoryOptions.length === 0) {
+      if (budgetCategory) setBudgetCategory('')
+      if (budgetSubcategory) setBudgetSubcategory('')
+      return
+    }
+
+    if (!categoryOptions.some((option) => option.id === budgetCategory)) {
+      setBudgetCategory(categoryOptions[0].id)
+      setBudgetSubcategory('')
+    }
+  }, [budgetCategory, budgetSubcategory, categoryOptions])
+
+  useEffect(() => {
+    if (!budgetSubcategory) return
+    const available = subcategoriesByCategory[budgetCategory] ?? []
+    if (!available.some((subcategory) => subcategory.id === budgetSubcategory)) {
+      setBudgetSubcategory('')
+    }
+  }, [budgetCategory, budgetSubcategory, subcategoriesByCategory])
 
   useEffect(() => {
     if (activeTab === 'dashboard') markOnboardingStep('dashboard')
@@ -366,11 +629,17 @@ function App() {
 
   const handleImport = useCallback(
     async (reprocess = false) => {
+      const normalizedBasePath = basePath.trim()
+      if (!normalizedBasePath) {
+        setStatusMessage('Informe a pasta base de importação antes de iniciar.')
+        return
+      }
+
       setLoading(true)
       setImportWarnings([])
       try {
-        const scan = await commands.importScan(basePath)
-        const run = await commands.importRun(basePath, reprocess)
+        const scan = await commands.importScan(normalizedBasePath)
+        const run = await commands.importRun(normalizedBasePath, reprocess)
         setStatusMessage(
           `Importação concluída: ${run.filesProcessed} arquivos, ${run.inserted} novas, ${run.deduped} deduplicadas.`,
         )
@@ -379,14 +648,30 @@ function App() {
           ...(scan.candidates.length === 0 ? ['Nenhum arquivo candidato encontrado.'] : []),
         ])
         markOnboardingStep('import')
-        await Promise.all([refreshDashboardOnly(), refreshTransactionsOnly(), refreshProjectionIfLoaded()])
+        await Promise.all([
+          refreshDashboardOnly(),
+          refreshTransactionsOnly(),
+          refreshReviewQueueOnly(),
+          refreshProjectionIfLoaded(),
+          refreshBudgetOnly(),
+          refreshReconciliationOnly(),
+        ])
       } catch (error) {
         setStatusMessage(`Falha na importação: ${String(error)}`)
       } finally {
         setLoading(false)
       }
     },
-    [basePath, markOnboardingStep, refreshDashboardOnly, refreshProjectionIfLoaded, refreshTransactionsOnly],
+    [
+      basePath,
+      markOnboardingStep,
+      refreshBudgetOnly,
+      refreshDashboardOnly,
+      refreshProjectionIfLoaded,
+      refreshReconciliationOnly,
+      refreshReviewQueueOnly,
+      refreshTransactionsOnly,
+    ],
   )
 
   useEffect(() => {
@@ -398,7 +683,9 @@ function App() {
   const handleUpdateCategory = async (tx: TransactionItem, categoryId: string, subcategoryId: string) => {
     const categoryName = categoryId ? findCategoryName(categoryId) : ''
     const subcategoryName = categoryId && subcategoryId ? findSubcategoryName(categoryId, subcategoryId) : ''
+    const nextNeedsReview = (tx.flowType === 'income' || tx.flowType === 'expense') && !categoryId
     const previousSnapshot = transactionsRef.current
+    const previousReviewSnapshot = reviewQueueRef.current
     setTransactions({
       ...previousSnapshot,
       items: previousSnapshot.items.map((item) =>
@@ -414,12 +701,35 @@ function App() {
           : item,
       ),
     })
+    const reviewDelta = tx.needsReview === nextNeedsReview ? 0 : nextNeedsReview ? 1 : -1
+    const updatedQueueTx: TransactionItem = {
+      ...tx,
+      categoryId,
+      categoryName,
+      subcategoryId,
+      subcategoryName,
+      needsReview: nextNeedsReview,
+    }
+    const queueWithoutTx = previousReviewSnapshot.items.filter((item) => item.id !== tx.id)
+    const nextReviewItems = nextNeedsReview ? [updatedQueueTx, ...queueWithoutTx] : queueWithoutTx
+    setReviewQueue({
+      ...previousReviewSnapshot,
+      items: nextReviewItems,
+      totalCount: Math.max(0, previousReviewSnapshot.totalCount + reviewDelta),
+    })
     try {
       await commands.transactionsUpdateCategory([tx.id], categoryId, subcategoryId)
       if (categoryId) markOnboardingStep('categorize')
-      void Promise.all([refreshTransactionsOnly(), refreshDashboardOnly()])
+      void Promise.all([
+        refreshTransactionsOnly(),
+        refreshReviewQueueOnly(),
+        refreshDashboardOnly(),
+        refreshBudgetOnly(),
+        refreshReconciliationOnly(),
+      ])
     } catch (error) {
       setTransactions(previousSnapshot)
+      setReviewQueue(previousReviewSnapshot)
       setStatusMessage(`Erro ao atualizar categoria: ${String(error)}`)
     }
   }
@@ -494,6 +804,54 @@ function App() {
     }
   }
 
+  const handleGoalScenarioAllocationChange = useCallback(
+    (goalId: number, scenario: ProjectionScenario, value: string) => {
+      setGoalAllocationDrafts((previous) => ({
+        ...previous,
+        [scenario]: {
+          ...previous[scenario],
+          [goalId]: value,
+        },
+      }))
+    },
+    [],
+  )
+
+  const readGoalScenarioAllocationValue = useCallback(
+    (goalId: number, scenario: ProjectionScenario): string =>
+      goalAllocationDrafts[scenario][goalId] ?? '',
+    [goalAllocationDrafts],
+  )
+
+  const handleSaveGoalScenarioAllocations = async (goalId: number) => {
+    const goal = goalsRef.current.find((item) => item.id === goalId)
+    if (!goal) {
+      setStatusMessage('Meta não encontrada para salvar alocações.')
+      return
+    }
+
+    try {
+      const payloads = PROJECTION_SCENARIOS.map((scenario) => {
+        const rawValue = goalAllocationDrafts[scenario][goalId] ?? ''
+        const parsed = parsePercentInput(rawValue)
+        if (parsed === null) {
+          throw new Error(`Valor inválido para cenário ${SCENARIO_LABELS[scenario]}.`)
+        }
+        return {
+          goalId,
+          scenario,
+          allocationPercent: parsed,
+        } as const
+      })
+
+      await Promise.all(payloads.map((payload) => commands.goalAllocationUpsert(payload)))
+      await Promise.all([refreshGoalsOnly(), refreshProjectionIfLoaded()])
+      setStatusMessage(`Alocações por cenário salvas para "${goal.name}".`)
+    } catch (error) {
+      setStatusMessage(`Erro ao salvar alocações por cenário: ${String(error)}`)
+    }
+  }
+
   const handleRunProjection = async (scenario: ProjectionScenario) => {
     setLoading(true)
     try {
@@ -528,10 +886,49 @@ function App() {
       setManualDescription('')
       setManualAmount('')
       setManualSubcategory('')
-      await Promise.all([refreshDashboardOnly(), refreshTransactionsOnly(), refreshProjectionIfLoaded()])
+      await Promise.all([
+        refreshDashboardOnly(),
+        refreshTransactionsOnly(),
+        refreshReviewQueueOnly(),
+        refreshProjectionIfLoaded(),
+        refreshBudgetOnly(),
+        refreshReconciliationOnly(),
+      ])
       setStatusMessage('Lançamento extraordinário registrado.')
     } catch (error) {
       setStatusMessage(`Erro ao salvar lançamento: ${String(error)}`)
+    }
+  }
+
+  const handleAddManualBalanceSnapshot = async (input: {
+    accountType: 'checking' | 'credit_card'
+    occurredAt: string
+    balanceInput: string
+    descriptionRaw: string
+  }): Promise<boolean> => {
+    const balanceCents = parseMoneyToCents(input.balanceInput)
+    if (!input.occurredAt.trim()) {
+      setStatusMessage('Informe a data do snapshot manual.')
+      return false
+    }
+    if (balanceCents === null) {
+      setStatusMessage('Informe um saldo valido para o snapshot manual.')
+      return false
+    }
+
+    try {
+      await commands.manualBalanceSnapshotAdd({
+        accountType: input.accountType,
+        occurredAt: input.occurredAt,
+        balanceCents,
+        descriptionRaw: input.descriptionRaw.trim(),
+      })
+      await Promise.all([refreshReconciliationOnly(), refreshDashboardOnly()])
+      setStatusMessage('Snapshot manual registrado com sucesso.')
+      return true
+    } catch (error) {
+      setStatusMessage(`Erro ao registrar snapshot manual: ${String(error)}`)
+      return false
     }
   }
 
@@ -570,6 +967,49 @@ function App() {
     }
   }
 
+  const handleSaveBudget = async (event: FormEvent) => {
+    event.preventDefault()
+    const month = (budgetMonthInput.trim() || budgetMonth).slice(0, 7)
+    const limitCents = parseMoneyToCents(budgetLimit)
+    if (!budgetCategory) {
+      setStatusMessage('Selecione uma categoria para o orçamento mensal.')
+      return
+    }
+    if (!month || !/^\d{4}-\d{2}$/.test(month)) {
+      setStatusMessage('Informe um mês válido para o orçamento (YYYY-MM).')
+      return
+    }
+    if (limitCents === null || limitCents <= 0) {
+      setStatusMessage('Informe um limite mensal válido maior que zero.')
+      return
+    }
+
+    try {
+      await commands.budgetUpsert({
+        month,
+        categoryId: budgetCategory,
+        subcategoryId: budgetSubcategory,
+        limitCents: Math.abs(limitCents),
+      })
+      setBudgetLimit('')
+      setBudgetSubcategory('')
+      await refreshBudgetOnly()
+      setStatusMessage('Orçamento mensal salvo com sucesso.')
+    } catch (error) {
+      setStatusMessage(`Erro ao salvar orçamento mensal: ${String(error)}`)
+    }
+  }
+
+  const handleDeleteBudget = async (budgetId: number) => {
+    try {
+      await commands.budgetDelete(budgetId)
+      await refreshBudgetOnly()
+      setStatusMessage('Orçamento mensal removido.')
+    } catch (error) {
+      setStatusMessage(`Erro ao remover orçamento mensal: ${String(error)}`)
+    }
+  }
+
   const handleCreateCategory = async (event: FormEvent) => {
     event.preventDefault()
     if (!newCategoryName.trim()) {
@@ -580,7 +1020,13 @@ function App() {
       await commands.categoriesUpsert({ name: newCategoryName.trim(), color: newCategoryColor })
       setNewCategoryName('')
       setNewCategoryColor(DEFAULT_CATEGORY_COLOR)
-      await Promise.all([refreshCategoriesOnly(), refreshTransactionsOnly(), refreshDashboardOnly()])
+      await Promise.all([
+        refreshCategoriesOnly(),
+        refreshTransactionsOnly(),
+        refreshDashboardOnly(),
+        refreshRulesOnly(),
+        refreshBudgetOnly(),
+      ])
       setStatusMessage('Categoria criada com sucesso.')
     } catch (error) {
       setStatusMessage(`Erro ao criar categoria: ${String(error)}`)
@@ -595,7 +1041,13 @@ function App() {
     }
     try {
       await commands.categoriesUpsert({ id: categoryId, name: draft.name.trim(), color: draft.color })
-      await Promise.all([refreshCategoriesOnly(), refreshTransactionsOnly(), refreshDashboardOnly()])
+      await Promise.all([
+        refreshCategoriesOnly(),
+        refreshTransactionsOnly(),
+        refreshDashboardOnly(),
+        refreshRulesOnly(),
+        refreshBudgetOnly(),
+      ])
       setStatusMessage('Categoria atualizada com sucesso.')
     } catch (error) {
       setStatusMessage(`Erro ao atualizar categoria: ${String(error)}`)
@@ -614,7 +1066,12 @@ function App() {
         name: newSubcategoryName.trim(),
       })
       setNewSubcategoryName('')
-      await Promise.all([refreshCategoriesOnly(), refreshTransactionsOnly()])
+      await Promise.all([
+        refreshCategoriesOnly(),
+        refreshTransactionsOnly(),
+        refreshRulesOnly(),
+        refreshBudgetOnly(),
+      ])
       setStatusMessage('Subcategoria criada com sucesso.')
     } catch (error) {
       setStatusMessage(`Erro ao criar subcategoria: ${String(error)}`)
@@ -633,11 +1090,94 @@ function App() {
         categoryId: draft.categoryId,
         name: draft.name.trim(),
       })
-      await Promise.all([refreshCategoriesOnly(), refreshTransactionsOnly()])
+      await Promise.all([
+        refreshCategoriesOnly(),
+        refreshTransactionsOnly(),
+        refreshRulesOnly(),
+        refreshBudgetOnly(),
+      ])
       setStatusMessage('Subcategoria atualizada com sucesso.')
     } catch (error) {
       setStatusMessage(`Erro ao atualizar subcategoria: ${String(error)}`)
     }
+  }
+
+  const handleRuleUpsert = async (draft: {
+    id?: number
+    sourceType: string
+    direction: '' | 'income' | 'expense'
+    merchantPattern: string
+    amountMinCents: number | null
+    amountMaxCents: number | null
+    categoryId: string
+    subcategoryId: string
+    confidence: number
+  }) => {
+    try {
+      await commands.rulesUpsert(draft)
+      await refreshRulesOnly()
+      setRulesDryRun(null)
+      setStatusMessage(draft.id ? 'Regra atualizada com sucesso.' : 'Regra criada com sucesso.')
+    } catch (error) {
+      setStatusMessage(`Erro ao salvar regra: ${String(error)}`)
+      throw error
+    }
+  }
+
+  const handleRuleDelete = async (ruleId: number) => {
+    try {
+      await commands.rulesDelete(ruleId)
+      await refreshRulesOnly()
+      setRulesDryRun(null)
+      setStatusMessage('Regra removida com sucesso.')
+    } catch (error) {
+      setStatusMessage(`Erro ao excluir regra: ${String(error)}`)
+    }
+  }
+
+  const handleRuleDryRun = async () => {
+    setLoading(true)
+    try {
+      const response = await commands.rulesDryRun(12)
+      setRulesDryRun(response)
+      setStatusMessage(`Dry-run concluído: ${response.matchedCount} transações elegíveis.`)
+    } catch (error) {
+      setStatusMessage(`Erro no dry-run de regras: ${String(error)}`)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleRuleApplyBatch = async () => {
+    setLoading(true)
+    try {
+      const response = await commands.rulesApplyBatch()
+      await Promise.all([
+        refreshTransactionsOnly(),
+        refreshReviewQueueOnly(),
+        refreshDashboardOnly(),
+        refreshRulesOnly(),
+        refreshBudgetOnly(),
+        refreshReconciliationOnly(),
+      ])
+      setRulesDryRun(null)
+      if (response.updated > 0) markOnboardingStep('categorize')
+      setStatusMessage(`Aplicação em lote concluída: ${response.updated} transações categorizadas.`)
+    } catch (error) {
+      setStatusMessage(`Erro ao aplicar regras em lote: ${String(error)}`)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleApplyTransactionFilters = () => {
+    setTransactionsPage(1)
+    applyTxFilters()
+  }
+
+  const handleClearTransactionFilters = () => {
+    setTransactionsPage(1)
+    clearTxFilters()
   }
 
   const sharedTransactionsProps = {
@@ -649,9 +1189,17 @@ function App() {
     onSearchChange: setTxSearch,
     onFlowTypeChange: setTxFlowType,
     onSourceTypeChange: setTxSourceType,
-    onApplyFilters: applyTxFilters,
-    onClearFilters: clearTxFilters,
+    onApplyFilters: handleApplyTransactionFilters,
+    onClearFilters: handleClearTransactionFilters,
+    page: transactionsPage,
+    rowsPerPage: transactionsPageSize,
+    onPageChange: (nextPage: number) => setTransactionsPage(nextPage),
+    onRowsPerPageChange: (nextRowsPerPage: number) => {
+      setTransactionsPageSize(nextRowsPerPage)
+      setTransactionsPage(1)
+    },
     transactions,
+    reviewQueue,
     categoryOptions,
     subcategoriesByCategory,
     flowLabel,
@@ -695,18 +1243,38 @@ function App() {
     goalDate,
     goalHorizon,
     goalAllocation,
+    budgetMonth: budgetMonthInput,
+    budgetCategory,
+    budgetSubcategory,
+    budgetLimit,
     onGoalNameChange: setGoalName,
     onGoalTargetChange: setGoalTarget,
     onGoalCurrentChange: setGoalCurrent,
     onGoalDateChange: setGoalDate,
     onGoalHorizonChange: setGoalHorizon,
     onGoalAllocationChange: setGoalAllocation,
+    onBudgetMonthChange: setBudgetMonthInput,
+    onBudgetCategoryChange: (value: string) => {
+      setBudgetCategory(value)
+      setBudgetSubcategory('')
+    },
+    onBudgetSubcategoryChange: setBudgetSubcategory,
+    onBudgetLimitChange: setBudgetLimit,
+    onSaveBudget: (event: FormEvent) => void handleSaveBudget(event),
+    onDeleteBudget: (budgetId: number) => void handleDeleteBudget(budgetId),
     onSaveGoal: (event: FormEvent) => void handleSaveGoal(event),
+    goalScenarioAllocationValue: (goalId: number, scenario: ProjectionScenario) =>
+      readGoalScenarioAllocationValue(goalId, scenario),
+    onGoalScenarioAllocationChange: (goalId: number, scenario: ProjectionScenario, value: string) =>
+      handleGoalScenarioAllocationChange(goalId, scenario, value),
+    onSaveGoalScenarioAllocations: (goalId: number) => void handleSaveGoalScenarioAllocations(goalId),
     goals,
+    monthlyBudgetSummary,
     projection,
     onRunProjection: (scenario: ProjectionScenario) => void handleRunProjection(scenario),
     categoryOptions,
     subcategoriesByCategory,
+    sectionHint: planningSectionHint,
   }
 
   const sharedSettingsProps = {
@@ -745,6 +1313,24 @@ function App() {
     onSubcategoryDraftCategoryChange: setSubcategoryDraftCategory,
     onSubcategoryDraftNameChange: setSubcategoryDraftName,
     onSaveSubcategory: (subcategoryId: string) => void handleSaveSubcategory(subcategoryId),
+    rules,
+    rulesDryRun,
+    onRuleUpsert: (draft: {
+      id?: number
+      sourceType: string
+      direction: '' | 'income' | 'expense'
+      merchantPattern: string
+      amountMinCents: number | null
+      amountMaxCents: number | null
+      categoryId: string
+      subcategoryId: string
+      confidence: number
+    }) => handleRuleUpsert(draft),
+    onRuleDelete: (ruleId: number) => handleRuleDelete(ruleId),
+    onRuleDryRun: () => handleRuleDryRun(),
+    onRuleApplyBatch: () => handleRuleApplyBatch(),
+    errorTrail,
+    onRefreshErrorTrail: () => void refreshErrorTrailOnly(),
   }
 
   const renderActiveTab = () => {
@@ -757,6 +1343,12 @@ function App() {
           dashboard={dashboard}
           uncategorizedCount={uncategorizedCount}
           transactions={transactions.items}
+          reconciliation={reconciliation}
+          monthlyBudgetSummary={monthlyBudgetSummary}
+          onOpenBudgetPlanner={() => openPlanningSection('budget')}
+          onOpenTransactions={openTransactionsReview}
+          onOpenTransactionsByAccount={openTransactionsReviewByAccount}
+          onAddManualSnapshot={handleAddManualBalanceSnapshot}
           chartsEnabled={uiPreferences.chartsEnabled}
           mode={uiPreferences.mode}
         />
@@ -869,8 +1461,28 @@ function App() {
         onGlobalSearchChange={setGlobalSearch}
         loading={loading}
         statusMessage={statusMessage}
+        sidebarPanel={
+          featureFlags.onboardingEnabled && !onboardingState.completed && showOnboarding ? (
+            <OnboardingGuide
+              state={onboardingState}
+              compact
+              onSkip={() => setShowOnboarding(false)}
+              onClose={() => setShowOnboarding(false)}
+              onGoToTab={(tab) => setActiveTab(tab)}
+            />
+          ) : undefined
+        }
         sidebarActions={
           <>
+            {featureFlags.onboardingEnabled && !onboardingState.completed && !showOnboarding && (
+              <button
+                type="button"
+                className="gf-button ghost"
+                onClick={() => setShowOnboarding(true)}
+              >
+                Mostrar onboarding
+              </button>
+            )}
             <button type="button" className="gf-button" disabled={loading} onClick={() => void handleImport(false)}>
               Importar
             </button>
@@ -883,15 +1495,6 @@ function App() {
       >
         {renderActiveTab()}
       </AppShell>
-
-      {featureFlags.onboardingEnabled && !onboardingState.completed && showOnboarding && (
-        <OnboardingGuide
-          state={onboardingState}
-          onSkip={() => setShowOnboarding(false)}
-          onClose={() => setShowOnboarding(false)}
-          onGoToTab={(tab) => setActiveTab(tab)}
-        />
-      )}
     </>
   )
 }

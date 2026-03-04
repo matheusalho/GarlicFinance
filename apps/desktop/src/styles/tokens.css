@@ -27,6 +27,6 @@
   --gf-shadow-1: 0 10px 24px rgba(15, 23, 42, 0.08);
   --gf-shadow-2: 0 24px 60px rgba(15, 23, 42, 0.12);
 
-  --gf-font-title: 'Sora', 'Segoe UI', sans-serif;
-  --gf-font-body: 'Manrope', 'Segoe UI', sans-serif;
+  --gf-font-title: 'Segoe UI Semibold', 'Segoe UI', 'Trebuchet MS', sans-serif;
+  --gf-font-body: 'Segoe UI', 'Trebuchet MS', 'Arial', sans-serif;
 }
