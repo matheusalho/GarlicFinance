@@ -1,0 +1,22 @@
+﻿[
+    {
+        "original":  "AGENTS.md",
+        "backup":  "docs\\context-backups\\2026-03-07_v2_pre_compactacao\\AGENTS.md",
+        "sha256":  "04E93ACC77B0CC131D581ED31C4BACBBC6B9498A7AB31180C9CAE85DE3BF26D4"
+    },
+    {
+        "original":  "docs/CONTEXTO_CONTINUIDADE_SESSOES.md",
+        "backup":  "docs\\context-backups\\2026-03-07_v2_pre_compactacao\\docs_CONTEXTO_CONTINUIDADE_SESSOES.md",
+        "sha256":  "AFBF71751C81D615CC598127D4B6F9EAAFE37F7B5904C496092995F78A8D419E"
+    },
+    {
+        "original":  "docs/ROADMAP_FECHADO_V2_0_SPRINTS.md",
+        "backup":  "docs\\context-backups\\2026-03-07_v2_pre_compactacao\\docs_ROADMAP_FECHADO_V2_0_SPRINTS.md",
+        "sha256":  "B4ABB36DE2EE33CCB3DC22C791F3FE04AE1DBE7BB9C206270E8E0EC9BACCF484"
+    },
+    {
+        "original":  "docs/MATRIZ_FEATURE_FLAGS_V2.md",
+        "backup":  "docs\\context-backups\\2026-03-07_v2_pre_compactacao\\docs_MATRIZ_FEATURE_FLAGS_V2.md",
+        "sha256":  "FFE9F911F0BA0EC5021B6B8758B039AC2B340757127FB3C116DC5A2E8A1A72E4"
+    }
+]

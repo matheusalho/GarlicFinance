@@ -12,6 +12,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::import_scan,
             commands::import_run,
+            commands::import_job_start,
+            commands::import_job_status,
+            commands::import_history,
             commands::transactions_list,
             commands::transactions_review_queue,
             commands::transactions_update_category,
@@ -44,6 +47,7 @@ pub fn run() {
             commands::observability_log_event,
             commands::observability_error_trail,
             commands::settings_password_set,
+            commands::settings_password_status,
             commands::settings_password_test,
             commands::manual_transaction_add,
             commands::manual_balance_snapshot_add,

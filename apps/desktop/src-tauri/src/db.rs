@@ -1,4 +1,4 @@
-﻿use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{de::DeserializeOwned, Serialize};
@@ -10,18 +10,17 @@ use std::path::{Path, PathBuf};
 
 use crate::models::{
     CanonicalTxInput, CategoryItem, CategoryTreeItem, CategoryUpsertInput, FeatureFlagsV1,
-    GoalAllocationItem, GoalInput, GoalListItem, ManualBalanceSnapshotInput,
-    ObservabilityEventItem,
-    ManualTransactionInput, MonthlyBudgetItem, OnboardingStateV1, RecurringTemplateInput,
-    RecurringTemplateItem, RuleListItem, RuleUpsertInput, SubcategoryItem,
-    SubcategoryUpsertInput, TransactionsFilters, UiPreferencesV1,
+    GoalAllocationItem, GoalInput, GoalListItem, ImportRunFileItem, ImportRunScope,
+    ImportRunSummaryItem, ManualBalanceSnapshotInput, ManualTransactionInput, MonthlyBudgetItem,
+    ObservabilityEventItem, OnboardingStateV1, RecurringTemplateInput, RecurringTemplateItem,
+    RuleListItem, RuleUpsertInput, SubcategoryItem, SubcategoryUpsertInput, TransactionsFilters,
+    UiPreferencesV1,
 };
 
 const MAX_OBSERVABILITY_EVENTS: i64 = 5_000;
 
 pub fn app_data_dir() -> Result<PathBuf> {
-    let base =
-        dirs::data_dir().context("Não foi possível resolver pasta de dados do usuário.")?;
+    let base = dirs::data_dir().context("Não foi possível resolver pasta de dados do usuário.")?;
     let app_dir = base.join("GarlicFinance");
     fs::create_dir_all(app_dir.join("backups"))?;
     Ok(app_dir)
@@ -97,6 +96,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
     (
         "005_observability_events",
         include_str!("../migrations/005_observability_events.sql"),
+    ),
+    (
+        "006_import_runs",
+        include_str!("../migrations/006_import_runs.sql"),
     ),
 ];
 
@@ -242,6 +245,8 @@ pub fn default_feature_flags() -> FeatureFlagsV1 {
         new_planning_enabled: true,
         new_settings_enabled: true,
         onboarding_enabled: true,
+        idle_tab_prefetch_enabled: true,
+        v2_async_jobs_enabled: true,
     }
 }
 
@@ -485,6 +490,297 @@ pub fn source_file_exists(conn: &Connection, file_hash: &str) -> Result<bool> {
     Ok(count > 0)
 }
 
+fn normalize_base_path(base_path: &str) -> String {
+    base_path
+        .trim()
+        .trim_end_matches(|c| c == '\\' || c == '/')
+        .to_string()
+}
+
+fn base_path_like_params(base_path: Option<&str>) -> (String, String) {
+    let normalized = base_path
+        .map(normalize_base_path)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_default();
+    let prefix = if normalized.is_empty() {
+        "%".to_string()
+    } else {
+        format!("{normalized}%")
+    };
+    (normalized, prefix)
+}
+
+pub fn list_latest_failed_source_file_paths(
+    conn: &Connection,
+    base_path: &str,
+) -> Result<Vec<String>> {
+    let normalized = normalize_base_path(base_path);
+    if normalized.is_empty() {
+        return Ok(Vec::new());
+    }
+    let path_prefix = format!("{normalized}%");
+
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT sf.path
+         FROM source_files sf
+         JOIN (
+            SELECT path, MAX(imported_at) AS latest_imported_at
+            FROM source_files
+            WHERE path LIKE ?1
+            GROUP BY path
+         ) latest ON latest.path = sf.path AND latest.latest_imported_at = sf.imported_at
+         WHERE sf.status = 'error'
+         ORDER BY sf.imported_at DESC",
+    )?;
+
+    let rows = stmt.query_map(params![path_prefix], |row| row.get::<_, String>(0))?;
+    let mut output = Vec::new();
+    for row in rows {
+        output.push(row?);
+    }
+    Ok(output)
+}
+
+pub fn create_import_run(
+    conn: &Connection,
+    base_path: &str,
+    reprocess: bool,
+    failed_only: bool,
+    requested_scope: &ImportRunScope,
+) -> Result<i64> {
+    let started_at = Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT INTO import_runs (
+           base_path,
+           started_at,
+           status,
+           reprocess,
+           failed_only,
+           requested_scope_json
+         ) VALUES (?1, ?2, 'running', ?3, ?4, ?5)",
+        params![
+            normalize_base_path(base_path),
+            started_at,
+            if reprocess { 1 } else { 0 },
+            if failed_only { 1 } else { 0 },
+            serde_json::to_string(requested_scope)?,
+        ],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+pub fn update_import_run_scope(
+    conn: &Connection,
+    run_id: i64,
+    requested_scope: &ImportRunScope,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE import_runs
+         SET requested_scope_json = ?2
+         WHERE id = ?1",
+        params![run_id, serde_json::to_string(requested_scope)?],
+    )?;
+    Ok(())
+}
+
+pub fn complete_import_run(
+    conn: &Connection,
+    run_id: i64,
+    status: &str,
+    files_discovered: i64,
+    files_processed: i64,
+    inserted_count: i64,
+    deduped_count: i64,
+    warnings: &[String],
+    error_message: &str,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE import_runs
+         SET finished_at = ?2,
+             status = ?3,
+             files_discovered = ?4,
+             files_processed = ?5,
+             inserted_count = ?6,
+             deduped_count = ?7,
+             warning_count = ?8,
+             warnings_json = ?9,
+             error_message = ?10
+         WHERE id = ?1",
+        params![
+            run_id,
+            Utc::now().to_rfc3339(),
+            status,
+            files_discovered,
+            files_processed,
+            inserted_count,
+            deduped_count,
+            warnings.len() as i64,
+            serde_json::to_string(warnings)?,
+            error_message,
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn insert_import_run_file(conn: &Connection, item: &ImportRunFileItem) -> Result<()> {
+    conn.execute(
+        "INSERT INTO import_run_files (
+           import_run_id,
+           path,
+           name,
+           file_hash,
+           source_type,
+           status,
+           transaction_count,
+           inserted_count,
+           deduped_count,
+           error_message,
+           observed_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        params![
+            item.import_run_id,
+            item.path,
+            item.name,
+            item.file_hash,
+            item.source_type,
+            item.status,
+            item.transaction_count,
+            item.inserted_count,
+            item.deduped_count,
+            item.error_message,
+            item.observed_at,
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn list_import_runs(
+    conn: &Connection,
+    base_path: Option<&str>,
+    limit: i64,
+) -> Result<Vec<ImportRunSummaryItem>> {
+    let limit = limit.clamp(1, 30);
+    let (normalized, prefix) = base_path_like_params(base_path);
+    let mut stmt = conn.prepare(
+        "SELECT
+           id,
+           base_path,
+           started_at,
+           finished_at,
+           status,
+           reprocess,
+           failed_only,
+           requested_scope_json,
+           files_discovered,
+           files_processed,
+           inserted_count,
+           deduped_count,
+           warning_count,
+           warnings_json,
+           error_message
+         FROM import_runs
+         WHERE (?1 = '' OR base_path LIKE ?2)
+         ORDER BY id DESC
+         LIMIT ?3",
+    )?;
+
+    let rows = stmt.query_map(params![normalized, prefix, limit], |row| {
+        let requested_scope_json: String = row.get(7)?;
+        let warnings_json: String = row.get(13)?;
+        Ok(ImportRunSummaryItem {
+            id: row.get(0)?,
+            base_path: row.get(1)?,
+            started_at: row.get(2)?,
+            finished_at: row.get(3)?,
+            status: row.get(4)?,
+            reprocess: row.get::<_, i64>(5)? != 0,
+            failed_only: row.get::<_, i64>(6)? != 0,
+            requested_scope: serde_json::from_str::<ImportRunScope>(&requested_scope_json)
+                .unwrap_or_default(),
+            files_discovered: row.get(8)?,
+            files_processed: row.get(9)?,
+            inserted_count: row.get(10)?,
+            deduped_count: row.get(11)?,
+            warning_count: row.get(12)?,
+            warnings: serde_json::from_str::<Vec<String>>(&warnings_json).unwrap_or_default(),
+            error_message: row.get(14)?,
+        })
+    })?;
+
+    let mut output = Vec::new();
+    for row in rows {
+        output.push(row?);
+    }
+    Ok(output)
+}
+
+pub fn list_latest_import_run_files(
+    conn: &Connection,
+    base_path: Option<&str>,
+    limit: i64,
+) -> Result<Vec<ImportRunFileItem>> {
+    let limit = limit.clamp(1, 120);
+    let (normalized, prefix) = base_path_like_params(base_path);
+    let mut stmt = conn.prepare(
+        "WITH ranked AS (
+           SELECT
+             irf.import_run_id,
+             irf.path,
+             irf.name,
+             irf.file_hash,
+             irf.source_type,
+             irf.status,
+             irf.transaction_count,
+             irf.inserted_count,
+             irf.deduped_count,
+             irf.error_message,
+             irf.observed_at,
+             ROW_NUMBER() OVER (PARTITION BY irf.path ORDER BY irf.id DESC) AS row_num
+           FROM import_run_files irf
+           JOIN import_runs ir ON ir.id = irf.import_run_id
+           WHERE (?1 = '' OR ir.base_path LIKE ?2)
+         )
+         SELECT
+           import_run_id,
+           path,
+           name,
+           file_hash,
+           source_type,
+           status,
+           transaction_count,
+           inserted_count,
+           deduped_count,
+           error_message,
+           observed_at
+         FROM ranked
+         WHERE row_num = 1
+         ORDER BY observed_at DESC, path ASC
+         LIMIT ?3",
+    )?;
+
+    let rows = stmt.query_map(params![normalized, prefix, limit], |row| {
+        Ok(ImportRunFileItem {
+            import_run_id: row.get(0)?,
+            path: row.get(1)?,
+            name: row.get(2)?,
+            file_hash: row.get(3)?,
+            source_type: row.get(4)?,
+            status: row.get(5)?,
+            transaction_count: row.get(6)?,
+            inserted_count: row.get(7)?,
+            deduped_count: row.get(8)?,
+            error_message: row.get(9)?,
+            observed_at: row.get(10)?,
+        })
+    })?;
+
+    let mut output = Vec::new();
+    for row in rows {
+        output.push(row?);
+    }
+    Ok(output)
+}
+
 pub fn upsert_source_file(
     conn: &Connection,
     path: &str,
@@ -546,6 +842,143 @@ pub fn insert_transaction(conn: &Connection, tx: &CanonicalTxInput) -> Result<bo
         ],
     )?;
     Ok(affected > 0)
+}
+
+fn has_encoding_anomaly(text: &str) -> bool {
+    text.contains('\u{FFFD}') || text.contains("Ã") || text.contains("Â")
+}
+
+pub fn refresh_transaction_payload_if_anomalous(
+    conn: &Connection,
+    tx: &CanonicalTxInput,
+) -> Result<bool> {
+    let existing: Option<(i64, String)> = conn
+        .query_row(
+            "SELECT id, description_raw
+             FROM transactions
+             WHERE dedup_fingerprint = ?1
+             LIMIT 1",
+            params![tx.dedup_fingerprint],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+
+    let Some((id, description_raw)) = existing else {
+        return Ok(false);
+    };
+
+    if !has_encoding_anomaly(&description_raw) {
+        return Ok(false);
+    }
+
+    conn.execute(
+        "UPDATE transactions
+         SET external_ref = ?1,
+             description_raw = ?2,
+             merchant_normalized = ?3,
+             metadata_json = ?4,
+             updated_at = ?5
+         WHERE id = ?6",
+        params![
+            tx.external_ref,
+            tx.description_raw,
+            tx.merchant_normalized,
+            tx.metadata_json,
+            Utc::now().to_rfc3339(),
+            id
+        ],
+    )?;
+
+    Ok(true)
+}
+
+pub fn repair_transaction_encoding_from_source(
+    conn: &Connection,
+    tx: &CanonicalTxInput,
+) -> Result<bool> {
+    let mut stmt = conn.prepare(
+        "SELECT id, dedup_fingerprint, description_raw
+         FROM transactions
+         WHERE source_file_hash = ?1
+           AND source_type = ?2
+           AND account_type = ?3
+           AND occurred_at = ?4
+           AND amount_cents = ?5
+           AND flow_type = ?6
+           AND IFNULL(external_ref, '') = ?7
+         ORDER BY id DESC
+         LIMIT 8",
+    )?;
+
+    let rows = stmt.query_map(
+        params![
+            tx.source_file_hash,
+            tx.source_type,
+            tx.account_type,
+            tx.occurred_at,
+            tx.amount_cents,
+            tx.flow_type,
+            tx.external_ref
+        ],
+        |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        },
+    )?;
+
+    let now = Utc::now().to_rfc3339();
+
+    for row in rows {
+        let (existing_id, existing_fingerprint, existing_description) = row?;
+        if !has_encoding_anomaly(&existing_description)
+            && existing_fingerprint == tx.dedup_fingerprint
+        {
+            continue;
+        }
+        if !has_encoding_anomaly(&existing_description) {
+            continue;
+        }
+
+        let target_fingerprint = if existing_fingerprint == tx.dedup_fingerprint {
+            existing_fingerprint
+        } else {
+            let already_exists = conn.query_row(
+                "SELECT COUNT(1) FROM transactions WHERE dedup_fingerprint = ?1 AND id <> ?2",
+                params![tx.dedup_fingerprint, existing_id],
+                |inner_row| inner_row.get::<_, i64>(0),
+            )? > 0;
+            if already_exists {
+                continue;
+            }
+            tx.dedup_fingerprint.clone()
+        };
+
+        conn.execute(
+            "UPDATE transactions
+             SET dedup_fingerprint = ?1,
+                 external_ref = ?2,
+                 description_raw = ?3,
+                 merchant_normalized = ?4,
+                 metadata_json = ?5,
+                 updated_at = ?6
+             WHERE id = ?7",
+            params![
+                target_fingerprint,
+                tx.external_ref,
+                tx.description_raw,
+                tx.merchant_normalized,
+                tx.metadata_json,
+                now,
+                existing_id
+            ],
+        )?;
+        return Ok(true);
+    }
+
+    Ok(false)
 }
 
 pub fn list_transactions(
@@ -918,9 +1351,7 @@ pub fn upsert_category(conn: &Connection, input: &CategoryUpsertInput) -> Result
             params![name, color, category_id],
         )?;
         if affected == 0 {
-            return Err(anyhow!(
-                "Categoria não encontrada para atualização."
-            ));
+            return Err(anyhow!("Categoria não encontrada para atualização."));
         }
         return Ok(category_id.to_string());
     }
@@ -1848,13 +2279,19 @@ pub fn account_pending_review_count(conn: &Connection, account_type: &str) -> Re
 #[cfg(test)]
 mod tests {
     use super::{
-        account_non_snapshot_total_after, account_non_snapshot_total_in_period, append_observability_event,
-        account_non_snapshot_total_until, account_pending_review_count, init_database, list_error_trail,
-        insert_manual_balance_snapshot, latest_balance_snapshot_for_account, list_monthly_budgets,
-        list_transactions, list_transactions_review_queue, prune_old_backups,
+        account_non_snapshot_total_after, account_non_snapshot_total_in_period,
+        account_non_snapshot_total_until, account_pending_review_count, append_observability_event,
+        complete_import_run, create_import_run, init_database, insert_import_run_file,
+        insert_manual_balance_snapshot, latest_balance_snapshot_for_account, list_error_trail,
+        list_import_runs, list_latest_import_run_files, list_monthly_budgets, list_transactions,
+        list_transactions_review_queue, prune_old_backups,
+        refresh_transaction_payload_if_anomalous, repair_transaction_encoding_from_source,
         transaction_review_queue_total_count, transaction_total_count, upsert_monthly_budget,
     };
-    use crate::models::{ManualBalanceSnapshotInput, TransactionsFilters};
+    use crate::models::{
+        CanonicalTxInput, ImportRunFileItem, ImportRunScope, ManualBalanceSnapshotInput,
+        TransactionsFilters,
+    };
     use chrono::Utc;
     use rusqlite::{params, Connection};
     use std::fs;
@@ -1910,6 +2347,32 @@ mod tests {
             search: None,
             limit: None,
             offset: None,
+        }
+    }
+
+    fn build_import_tx(
+        dedup_fingerprint: &str,
+        source_file_hash: &str,
+        occurred_at: &str,
+        amount_cents: i64,
+        description_raw: &str,
+    ) -> CanonicalTxInput {
+        CanonicalTxInput {
+            source_type: "btg_checking_xls".to_string(),
+            source_file_hash: source_file_hash.to_string(),
+            external_ref: "".to_string(),
+            dedup_fingerprint: dedup_fingerprint.to_string(),
+            account_type: "checking".to_string(),
+            occurred_at: occurred_at.to_string(),
+            competence_month: occurred_at.get(0..7).unwrap_or("2026-03").to_string(),
+            amount_cents,
+            currency: "BRL".to_string(),
+            description_raw: description_raw.to_string(),
+            merchant_normalized: description_raw.to_lowercase(),
+            category_id: "".to_string(),
+            subcategory_id: "".to_string(),
+            flow_type: "expense".to_string(),
+            metadata_json: "{}".to_string(),
         }
     }
 
@@ -2162,6 +2625,96 @@ mod tests {
     }
 
     #[test]
+    fn refresh_transaction_payload_if_anomalous_updates_existing_row() {
+        let conn = Connection::open_in_memory().expect("failed to open sqlite");
+        init_database(&conn).expect("failed to init database");
+
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO transactions (
+               source_type, source_file_hash, external_ref, dedup_fingerprint, account_type, occurred_at,
+               competence_month, amount_cents, currency, description_raw, merchant_normalized,
+               category_id, subcategory_id, flow_type, metadata_json, is_manual, created_at, updated_at
+             ) VALUES (
+               'btg_checking_xls', 'seed_hash', '', 'seed_fp', 'checking', '2026-03-01T12:00:00',
+               '2026-03', -41828, 'BRL', 'Fatura do cart\u{FFFD}o BTG', 'fatura do cart\u{FFFD}o',
+               NULL, NULL, 'expense', '{}', 0, ?1, ?1
+             )",
+            params![now],
+        )
+        .expect("failed to seed anomalous transaction");
+
+        let incoming = build_import_tx(
+            "seed_fp",
+            "seed_hash",
+            "2026-03-01T12:00:00",
+            -41828,
+            "Fatura do cartao BTG",
+        );
+        let updated = refresh_transaction_payload_if_anomalous(&conn, &incoming)
+            .expect("refresh should not fail");
+        assert!(updated, "expected anomalous payload to be refreshed");
+
+        let description: String = conn
+            .query_row(
+                "SELECT description_raw FROM transactions WHERE dedup_fingerprint = 'seed_fp'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("failed to read updated description");
+        assert_eq!(description, "Fatura do cartao BTG");
+    }
+
+    #[test]
+    fn repair_transaction_encoding_from_source_updates_fingerprint_when_anomalous() {
+        let conn = Connection::open_in_memory().expect("failed to open sqlite");
+        init_database(&conn).expect("failed to init database");
+
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO transactions (
+               source_type, source_file_hash, external_ref, dedup_fingerprint, account_type, occurred_at,
+               competence_month, amount_cents, currency, description_raw, merchant_normalized,
+               category_id, subcategory_id, flow_type, metadata_json, is_manual, created_at, updated_at
+             ) VALUES (
+               'btg_checking_xls', 'seed_hash', '', 'old_fp', 'checking', '2026-03-01T12:00:00',
+               '2026-03', -41828, 'BRL', 'Fatura do cart\u{FFFD}o BTG', 'fatura do cart\u{FFFD}o',
+               'alimentacao', NULL, 'expense', '{}', 0, ?1, ?1
+             )",
+            params![now],
+        )
+        .expect("failed to seed anomalous transaction");
+
+        let incoming = build_import_tx(
+            "new_fp",
+            "seed_hash",
+            "2026-03-01T12:00:00",
+            -41828,
+            "Fatura do cartao BTG",
+        );
+        let repaired = repair_transaction_encoding_from_source(&conn, &incoming)
+            .expect("repair should not fail");
+        assert!(repaired, "expected surrogate repair to update existing row");
+
+        let (fingerprint, description, category_id): (String, String, String) = conn
+            .query_row(
+                "SELECT dedup_fingerprint, description_raw, IFNULL(category_id, '')
+                 FROM transactions
+                 WHERE source_file_hash = 'seed_hash'
+                 LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("failed to fetch repaired row");
+        assert_eq!(fingerprint, "new_fp");
+        assert_eq!(description, "Fatura do cartao BTG");
+        assert_eq!(
+            category_id, "alimentacao",
+            "existing categorization should be preserved during repair"
+        );
+    }
+
+    #[test]
     fn pagination_handles_large_dataset_without_truncation() {
         let conn = Connection::open_in_memory().expect("failed to open sqlite");
         init_database(&conn).expect("failed to init database");
@@ -2227,8 +2780,8 @@ mod tests {
             })
             .expect("failed to count migrations");
         assert_eq!(
-            migration_count, 5,
-            "expected 001, 002, 003, 004 and 005 to be registered"
+            migration_count, 6,
+            "expected 001, 002, 003, 004, 005 and 006 to be registered"
         );
 
         let allocation_count: i64 = conn
@@ -2275,10 +2828,14 @@ mod tests {
         let conn = Connection::open_in_memory().expect("failed to open sqlite");
         conn.execute_batch(include_str!("../migrations/001_init.sql"))
             .expect("failed to apply 001 schema");
-        conn.execute_batch(include_str!("../migrations/002_goal_allocations_by_scenario.sql"))
-            .expect("failed to apply 002 schema");
-        conn.execute_batch(include_str!("../migrations/003_transactions_pagination_indexes.sql"))
-            .expect("failed to apply 003 schema");
+        conn.execute_batch(include_str!(
+            "../migrations/002_goal_allocations_by_scenario.sql"
+        ))
+        .expect("failed to apply 002 schema");
+        conn.execute_batch(include_str!(
+            "../migrations/003_transactions_pagination_indexes.sql"
+        ))
+        .expect("failed to apply 003 schema");
         conn.execute_batch(include_str!("../migrations/004_monthly_budgets.sql"))
             .expect("failed to apply 004 schema");
 
@@ -2340,7 +2897,7 @@ mod tests {
                 row.get(0)
             })
             .expect("failed to count schema_migrations");
-        assert_eq!(migration_count, 5);
+        assert_eq!(migration_count, 6);
 
         let has_005: i64 = conn
             .query_row(
@@ -2350,6 +2907,15 @@ mod tests {
             )
             .expect("failed to verify 005 migration");
         assert_eq!(has_005, 1);
+
+        let has_006: i64 = conn
+            .query_row(
+                "SELECT COUNT(1) FROM schema_migrations WHERE version = '006_import_runs'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("failed to verify 006 migration");
+        assert_eq!(has_006, 1);
 
         let tx_count: i64 = conn
             .query_row(
@@ -2403,6 +2969,111 @@ mod tests {
     }
 
     #[test]
+    fn import_run_history_persists_runs_and_latest_file_status() {
+        let conn = Connection::open_in_memory().expect("failed to open sqlite");
+        init_database(&conn).expect("failed to init database");
+
+        let run_id = create_import_run(
+            &conn,
+            r"C:\Dados\ArquivosFinance",
+            true,
+            false,
+            &ImportRunScope {
+                mode: "source_reprocess".to_string(),
+                include_paths: vec![r"C:\Dados\ArquivosFinance\CartaoBTG\arquivo.xlsx".to_string()],
+                source_types: vec!["btg_card_encrypted_xlsx".to_string()],
+            },
+        )
+        .expect("failed to create import run");
+
+        insert_import_run_file(
+            &conn,
+            &ImportRunFileItem {
+                import_run_id: run_id,
+                path: r"C:\Dados\ArquivosFinance\CartaoBTG\arquivo.xlsx".to_string(),
+                name: "arquivo.xlsx".to_string(),
+                file_hash: "hash-1".to_string(),
+                source_type: "btg_card_encrypted_xlsx".to_string(),
+                status: "error".to_string(),
+                transaction_count: 0,
+                inserted_count: 0,
+                deduped_count: 0,
+                error_message: "Senha inválida".to_string(),
+                observed_at: "2026-03-07T10:00:00Z".to_string(),
+            },
+        )
+        .expect("failed to insert first import file");
+
+        complete_import_run(
+            &conn,
+            run_id,
+            "partial",
+            1,
+            1,
+            0,
+            0,
+            &["Senha inválida".to_string()],
+            "",
+        )
+        .expect("failed to complete first import run");
+
+        let second_run_id = create_import_run(
+            &conn,
+            r"C:\Dados\ArquivosFinance",
+            true,
+            true,
+            &ImportRunScope {
+                mode: "source_failed_only".to_string(),
+                include_paths: vec![r"C:\Dados\ArquivosFinance\CartaoBTG\arquivo.xlsx".to_string()],
+                source_types: vec!["btg_card_encrypted_xlsx".to_string()],
+            },
+        )
+        .expect("failed to create second import run");
+
+        insert_import_run_file(
+            &conn,
+            &ImportRunFileItem {
+                import_run_id: second_run_id,
+                path: r"C:\Dados\ArquivosFinance\CartaoBTG\arquivo.xlsx".to_string(),
+                name: "arquivo.xlsx".to_string(),
+                file_hash: "hash-1".to_string(),
+                source_type: "btg_card_encrypted_xlsx".to_string(),
+                status: "parsed".to_string(),
+                transaction_count: 12,
+                inserted_count: 8,
+                deduped_count: 4,
+                error_message: "".to_string(),
+                observed_at: "2026-03-07T11:00:00Z".to_string(),
+            },
+        )
+        .expect("failed to insert latest import file");
+
+        complete_import_run(&conn, second_run_id, "success", 1, 1, 8, 4, &[], "")
+            .expect("failed to complete second import run");
+
+        let runs = list_import_runs(&conn, Some(r"C:\Dados\ArquivosFinance"), 10)
+            .expect("failed to list import runs");
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].id, second_run_id);
+        assert_eq!(runs[0].status, "success");
+        assert_eq!(runs[0].requested_scope.mode, "source_failed_only");
+        assert_eq!(
+            runs[0].requested_scope.source_types,
+            vec!["btg_card_encrypted_xlsx"]
+        );
+        assert_eq!(runs[1].status, "partial");
+        assert_eq!(runs[1].requested_scope.include_paths.len(), 1);
+
+        let latest_files =
+            list_latest_import_run_files(&conn, Some(r"C:\Dados\ArquivosFinance"), 10)
+                .expect("failed to list latest import files");
+        assert_eq!(latest_files.len(), 1);
+        assert_eq!(latest_files[0].status, "parsed");
+        assert_eq!(latest_files[0].inserted_count, 8);
+        assert_eq!(latest_files[0].deduped_count, 4);
+    }
+
+    #[test]
     fn monthly_budget_tracks_spent_and_alert_level() {
         let conn = Connection::open_in_memory().expect("failed to open sqlite");
         init_database(&conn).expect("failed to init database");
@@ -2438,9 +3109,8 @@ mod tests {
         assert_eq!(items[0].remaining_cents, -2_000);
         assert_eq!(items[0].alert_level, "exceeded");
 
-        let updated_id =
-            upsert_monthly_budget(&conn, None, "2026-03", "alimentacao", "", 20_000)
-                .expect("failed to update monthly budget by scope");
+        let updated_id = upsert_monthly_budget(&conn, None, "2026-03", "alimentacao", "", 20_000)
+            .expect("failed to update monthly budget by scope");
         assert_eq!(updated_id, budget_id);
 
         let updated_items =
@@ -2509,13 +3179,9 @@ mod tests {
             .expect("failed to compute movements after snapshot");
         assert_eq!(after_snapshot, -1_000);
 
-        let period_net = account_non_snapshot_total_in_period(
-            &conn,
-            "checking",
-            "2026-01-01",
-            "2026-01-31",
-        )
-        .expect("failed to compute period net");
+        let period_net =
+            account_non_snapshot_total_in_period(&conn, "checking", "2026-01-01", "2026-01-31")
+                .expect("failed to compute period net");
         assert_eq!(period_net, 7_000);
 
         let pending = account_pending_review_count(&conn, "checking")
@@ -2535,8 +3201,6 @@ mod tests {
                 row.get(0)
             })
             .expect("failed to count migrations");
-        assert_eq!(migration_count, 5, "migrations should not duplicate");
+        assert_eq!(migration_count, 6, "migrations should not duplicate");
     }
 }
-
-

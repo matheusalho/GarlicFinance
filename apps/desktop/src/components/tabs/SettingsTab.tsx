@@ -1,12 +1,19 @@
 ﻿import { useMemo, useRef, useState } from 'react'
 import type { FormEvent, KeyboardEvent } from 'react'
 
+import { FirstUseJourneyCard } from '../common/FirstUseJourneyCard'
 import { brl, shortDate } from '../../lib/format'
+import type { FirstUseJourneyCardProps } from '../common/FirstUseJourneyCard'
 import type {
   AppEventLogItem,
   CategorizationRuleItem,
   CategoryTreeItem,
   FeatureFlagsV1,
+  ImportHistoryResponse,
+  ImportJobStatusResponse,
+  ImportRunFileItem,
+  ImportRunSummaryItem,
+  ImportRunStatus,
   OnboardingStateV1,
   RulesDryRunResponse,
   UiPreferencesV1,
@@ -24,6 +31,7 @@ interface SubcategoryListItem {
 }
 
 type SettingsSection = 'import' | 'security' | 'ui' | 'categories' | 'rules'
+export type SettingsSectionHint = SettingsSection
 
 interface RuleUpsertDraft {
   id?: number
@@ -39,13 +47,20 @@ interface RuleUpsertDraft {
 
 interface SettingsTabProps {
   loading: boolean
+  importJob: ImportJobStatusResponse | null
+  importBusy: boolean
   basePath: string
   onBasePathChange: (value: string) => void
   autoImportEnabled: boolean
   autoImportLoaded: boolean
   onToggleAutoImport: (enabled: boolean) => void
   onImport: (reprocess: boolean) => void
+  onImportFailedOnly: () => void
+  onImportSelective: (options: { failedOnly?: boolean; sourceTypes?: string[]; includePaths?: string[] }) => void
   importWarnings: string[]
+  importHistory: ImportHistoryResponse
+  onRefreshImportHistory: () => void
+  btgPasswordConfigured: boolean
   btgPasswordInput: string
   onBtgPasswordInputChange: (value: string) => void
   onSavePassword: () => void
@@ -86,8 +101,10 @@ interface SettingsTabProps {
   featureFlags: FeatureFlagsV1
   onFeatureFlagsChange: (next: FeatureFlagsV1) => void
   onboardingState: OnboardingStateV1
+  firstUseJourneyCard?: FirstUseJourneyCardProps | null
   onResetOnboarding: () => void
   onCompleteOnboarding: () => void
+  sectionHint?: SettingsSectionHint
 }
 
 const ONBOARDING_STEPS: Array<{ id: 'import' | 'categorize' | 'dashboard' | 'projection'; label: string }> = [
@@ -97,13 +114,18 @@ const ONBOARDING_STEPS: Array<{ id: 'import' | 'categorize' | 'dashboard' | 'pro
   { id: 'projection', label: 'Rodar projeção' },
 ]
 
-const FEATURE_FLAG_LABELS: Array<{ key: keyof FeatureFlagsV1; label: string }> = [
+const RUNTIME_FEATURE_FLAG_LABELS: Array<{ key: keyof FeatureFlagsV1; label: string }> = [
+  { key: 'onboardingEnabled', label: 'Onboarding guiado' },
+  { key: 'idleTabPrefetchEnabled', label: 'Prefetch ocioso de abas secundárias' },
+  { key: 'v2AsyncJobsEnabled', label: 'Importação assíncrona com progresso visível' },
+]
+
+const TRANSITION_FEATURE_FLAG_LABELS: Array<{ key: keyof FeatureFlagsV1; label: string }> = [
   { key: 'newLayoutEnabled', label: 'Novo layout (Sidebar + Workspace)' },
   { key: 'newDashboardEnabled', label: 'Dashboard redesenhado' },
   { key: 'newTransactionsEnabled', label: 'Transações redesenhadas' },
   { key: 'newPlanningEnabled', label: 'Planejamento redesenhado' },
   { key: 'newSettingsEnabled', label: 'Configurações redesenhadas' },
-  { key: 'onboardingEnabled', label: 'Onboarding guiado' },
 ]
 
 const RULE_SOURCE_OPTIONS: Array<{ id: string; label: string }> = [
@@ -114,6 +136,44 @@ const RULE_SOURCE_OPTIONS: Array<{ id: string; label: string }> = [
   { id: 'btg_checking_xls', label: 'BTG Conta' },
   { id: 'manual', label: 'Lançamentos manuais' },
 ]
+
+const IMPORT_SOURCE_LABELS: Record<string, string> = {
+  nubank_card_ofx: 'Nubank Cartão',
+  nubank_checking_ofx: 'Nubank Conta',
+  btg_card_encrypted_xlsx: 'BTG Cartão',
+  btg_checking_xls: 'BTG Conta',
+  manual: 'Lançamentos manuais',
+}
+
+const IMPORT_STATUS_LABELS: Record<ImportRunStatus, string> = {
+  running: 'Em andamento',
+  success: 'Concluída',
+  partial: 'Parcial',
+  error: 'Com erro',
+  noop: 'Sem alterações',
+}
+
+const IMPORT_STATUS_TONE: Record<ImportRunStatus, '' | 'gf-pill-ok' | 'gf-pill-warning' | 'gf-pill-divergent'> = {
+  running: 'gf-pill-warning',
+  success: 'gf-pill-ok',
+  partial: 'gf-pill-warning',
+  error: 'gf-pill-divergent',
+  noop: '',
+}
+
+const IMPORT_PHASE_LABELS: Record<string, string> = {
+  queued: 'Na fila',
+  preparing_scope: 'Preparando escopo',
+  preparing_scope_legacy: 'Preparando escopo',
+  validating_credentials: 'Validando credenciais',
+  parsing_sources: 'Lendo arquivos',
+  backup: 'Gerando backup',
+  persisting_sources: 'Persistindo histórico',
+  importing_transactions: 'Importando transações',
+  auto_categorization: 'Aplicando regras',
+  completed: 'Concluído',
+  failed: 'Falhou',
+}
 
 const SETTINGS_SECTIONS: SettingsSection[] = ['import', 'security', 'ui', 'categories', 'rules']
 
@@ -229,15 +289,65 @@ const centsToInput = (value: number | null): string => {
   return Number.isInteger(amount) ? String(amount) : amount.toFixed(2)
 }
 
+const formatImportScopeLabel = (run: ImportRunSummaryItem): string => {
+  const { requestedScope } = run
+  if (requestedScope.sourceTypes.length > 0) {
+    const sources = requestedScope.sourceTypes
+      .map((item) => IMPORT_SOURCE_LABELS[item] ?? item)
+      .join(', ')
+    if (run.failedOnly) return `Falhas das fontes: ${sources}`
+    return `Fontes selecionadas: ${sources}`
+  }
+  if (requestedScope.includePaths.length > 0) {
+    if (run.failedOnly) return 'Falhas em arquivo(s) selecionado(s)'
+    return 'Arquivo(s) selecionado(s)'
+  }
+  if (run.failedOnly) return 'Reprocessar falhas'
+  if (run.reprocess) return 'Reprocessar tudo'
+  return 'Importar novos'
+}
+
+const formatImportScopeDetail = (run: ImportRunSummaryItem): string => {
+  const { requestedScope } = run
+  if (requestedScope.includePaths.length > 0) {
+    return `${requestedScope.includePaths.length} arquivo(s) no escopo`
+  }
+  if (requestedScope.sourceTypes.length > 0) {
+    return `${requestedScope.sourceTypes.length} fonte(s) no escopo`
+  }
+  return 'Escopo completo da pasta base'
+}
+
+const shouldSuggestSecurityAction = (
+  run: ImportRunSummaryItem | null,
+  errorFiles: ImportRunFileItem[],
+): boolean => {
+  const combined = [run?.errorMessage ?? '', ...(run?.warnings ?? []), ...errorFiles.map((item) => item.errorMessage)]
+    .join(' ')
+    .toLowerCase()
+  const touchesBtgCard =
+    errorFiles.some((item) => item.sourceType === 'btg_card_encrypted_xlsx') ||
+    Boolean(run?.requestedScope.sourceTypes.includes('btg_card_encrypted_xlsx')) ||
+    combined.includes('btg')
+  return touchesBtgCard && /(senha|credencial|credential|password)/i.test(combined)
+}
+
 export function SettingsTab({
   loading,
+  importJob,
+  importBusy,
   basePath,
   onBasePathChange,
   autoImportEnabled,
   autoImportLoaded,
   onToggleAutoImport,
   onImport,
+  onImportFailedOnly,
+  onImportSelective,
   importWarnings,
+  importHistory,
+  onRefreshImportHistory,
+  btgPasswordConfigured,
   btgPasswordInput,
   onBtgPasswordInputChange,
   onSavePassword,
@@ -278,10 +388,16 @@ export function SettingsTab({
   featureFlags,
   onFeatureFlagsChange,
   onboardingState,
+  firstUseJourneyCard,
   onResetOnboarding,
   onCompleteOnboarding,
+  sectionHint,
 }: SettingsTabProps) {
-  const [activeSection, setActiveSection] = useState<SettingsSection>('import')
+  const [activeSection, setActiveSection] = useState<SettingsSection>(sectionHint ?? 'import')
+  const [historyRunsPage, setHistoryRunsPage] = useState(1)
+  const [latestFilesPage, setLatestFilesPage] = useState(1)
+  const [historyRunsPageSize, setHistoryRunsPageSize] = useState(5)
+  const [latestFilesPageSize, setLatestFilesPageSize] = useState(6)
   const sectionButtonRefs = useRef<Record<SettingsSection, HTMLButtonElement | null>>({
     import: null,
     security: null,
@@ -299,6 +415,44 @@ export function SettingsTab({
   const [ruleSubcategoryId, setRuleSubcategoryId] = useState('')
   const [ruleConfidence, setRuleConfidence] = useState('0.75')
   const recentErrors = errorTrail ?? []
+  const latestImportRun = importHistory.runs[0] ?? null
+  const latestErroredFiles = useMemo(
+    () => importHistory.latestFiles.filter((item) => item.status === 'error'),
+    [importHistory.latestFiles],
+  )
+  const latestErroredSources = useMemo(() => {
+    const grouped = new Map<string, { sourceType: string; count: number }>()
+    for (const item of latestErroredFiles) {
+      const next = grouped.get(item.sourceType) ?? { sourceType: item.sourceType, count: 0 }
+      next.count += 1
+      grouped.set(item.sourceType, next)
+    }
+    return Array.from(grouped.values()).sort((left, right) => right.count - left.count)
+  }, [latestErroredFiles])
+  const totalHistoryRunPages = Math.max(1, Math.ceil(importHistory.runs.length / historyRunsPageSize))
+  const totalLatestFilesPages = Math.max(1, Math.ceil(importHistory.latestFiles.length / latestFilesPageSize))
+  const currentHistoryRunsPage = Math.min(historyRunsPage, totalHistoryRunPages)
+  const currentLatestFilesPage = Math.min(latestFilesPage, totalLatestFilesPages)
+  const visibleImportRuns = useMemo(
+    () =>
+      importHistory.runs.slice(
+        (currentHistoryRunsPage - 1) * historyRunsPageSize,
+        (currentHistoryRunsPage - 1) * historyRunsPageSize + historyRunsPageSize,
+      ),
+    [currentHistoryRunsPage, historyRunsPageSize, importHistory.runs],
+  )
+  const visibleLatestFiles = useMemo(
+    () =>
+      importHistory.latestFiles.slice(
+        (currentLatestFilesPage - 1) * latestFilesPageSize,
+        (currentLatestFilesPage - 1) * latestFilesPageSize + latestFilesPageSize,
+      ),
+    [currentLatestFilesPage, importHistory.latestFiles, latestFilesPageSize],
+  )
+  const recommendSecurityAction = useMemo(
+    () => shouldSuggestSecurityAction(latestImportRun, latestErroredFiles),
+    [latestErroredFiles, latestImportRun],
+  )
   const ruleAmountMinParsed = useMemo(() => parseCurrencyInput(ruleAmountMin), [ruleAmountMin])
   const ruleAmountMaxParsed = useMemo(() => parseCurrencyInput(ruleAmountMax), [ruleAmountMax])
   const ruleFormErrors = useMemo(
@@ -429,6 +583,8 @@ export function SettingsTab({
 
   return (
     <div className="gf-stack">
+      {firstUseJourneyCard && <FirstUseJourneyCard {...firstUseJourneyCard} />}
+
       <section className="gf-card">
         <header className="gf-section-header">
           <div>
@@ -485,16 +641,34 @@ export function SettingsTab({
             <input
               type="checkbox"
               checked={autoImportEnabled}
-              disabled={loading || !autoImportLoaded}
+              disabled={loading || importBusy || !autoImportLoaded}
               onChange={(event) => onToggleAutoImport(event.target.checked)}
             />
             <span>Auto-importar ao iniciar o app</span>
           </label>
+          {!btgPasswordConfigured && (
+            <div className="gf-feedback error" role="status" aria-live="polite">
+              Arquivos BTG de cartão exigem senha cadastrada.
+              <div className="gf-inline-actions">
+                <button
+                  type="button"
+                  className="gf-button ghost"
+                  disabled={loading || importBusy}
+                  onClick={() => activateSection('security')}
+                >
+                  Abrir Segurança
+                </button>
+              </div>
+            </div>
+          )}
           <div className="gf-inline-actions">
-            <button className="gf-button" disabled={loading} type="button" onClick={() => onImport(false)}>
+            <button className="gf-button" disabled={loading || importBusy} type="button" onClick={() => onImport(false)}>
               Importar novos arquivos
             </button>
-            <button className="gf-button secondary" disabled={loading} type="button" onClick={() => onImport(true)}>
+            <button className="gf-button secondary" disabled={loading || importBusy} type="button" onClick={onImportFailedOnly}>
+              Reprocessar falhas
+            </button>
+            <button className="gf-button secondary" disabled={loading || importBusy} type="button" onClick={() => onImport(true)}>
               Reprocessar tudo
             </button>
           </div>
@@ -505,6 +679,399 @@ export function SettingsTab({
               ))}
             </ul>
           )}
+
+          {importJob && (
+            <article className="gf-card" role="status" aria-live="polite">
+              <header className="gf-section-header">
+                <div>
+                  <h4>{importBusy ? 'Importação em andamento' : 'Último job de importação'}</h4>
+                  <p>{IMPORT_PHASE_LABELS[importJob.phase] ?? importJob.phase}</p>
+                </div>
+                <span className={`gf-pill ${importBusy ? 'gf-pill-warning' : IMPORT_STATUS_TONE[(importJob.status === 'queued' ? 'running' : importJob.status) as ImportRunStatus]}`.trim()}>
+                  {importBusy ? `${Math.round(importJob.progressPercent)}%` : IMPORT_STATUS_LABELS[(importJob.status === 'queued' ? 'running' : importJob.status) as ImportRunStatus]}
+                </span>
+              </header>
+              <p>{importJob.message}</p>
+              <div className="gf-progress gf-progress-onboarding" aria-hidden="true">
+                <span style={{ width: `${Math.max(0, Math.min(100, importJob.progressPercent))}%` }} />
+              </div>
+              {(importJob.total > 0 || importJob.current > 0) && (
+                <small>
+                  {importJob.current} de {importJob.total} etapa(s)/itens processados
+                </small>
+              )}
+            </article>
+          )}
+
+          <div className="gf-onboarding-box" aria-live="polite">
+            <header className="gf-section-header">
+              <div>
+                <h4>Central de Importação 2.0</h4>
+                <p>Histórico recente, último status por arquivo e base para reprocessamento seletivo.</p>
+              </div>
+              <div className="gf-inline-actions">
+                <label className="gf-field gf-field-inline">
+                  Execuções por página
+                  <select
+                    aria-label="Linhas por página do histórico de execuções"
+                    value={historyRunsPageSize}
+                    onChange={(event) => {
+                      setHistoryRunsPage(1)
+                      setHistoryRunsPageSize(Number(event.target.value))
+                    }}
+                  >
+                    <option value="5">5</option>
+                    <option value="10">10</option>
+                    <option value="20">20</option>
+                  </select>
+                </label>
+                <label className="gf-field gf-field-inline">
+                  Arquivos por página
+                  <select
+                    aria-label="Linhas por página do status por arquivo"
+                    value={latestFilesPageSize}
+                    onChange={(event) => {
+                      setLatestFilesPage(1)
+                      setLatestFilesPageSize(Number(event.target.value))
+                    }}
+                  >
+                    <option value="6">6</option>
+                    <option value="12">12</option>
+                    <option value="24">24</option>
+                  </select>
+                </label>
+                <button
+                  type="button"
+                  className="gf-button ghost"
+                  disabled={loading || importBusy}
+                  onClick={onRefreshImportHistory}
+                >
+                  Atualizar histórico
+                </button>
+              </div>
+            </header>
+
+            {latestImportRun ? (
+              <div className="gf-inline-grid gf-inline-grid-3">
+                <article className="gf-card">
+                  <small>Última execução</small>
+                  <div className="gf-inline-actions">
+                    <strong>{shortDate(latestImportRun.finishedAt || latestImportRun.startedAt)}</strong>
+                    <span className={`gf-pill ${IMPORT_STATUS_TONE[latestImportRun.status]}`.trim()}>
+                      {IMPORT_STATUS_LABELS[latestImportRun.status]}
+                    </span>
+                  </div>
+                  <small>
+                    {latestImportRun.filesProcessed} arquivos · {latestImportRun.insertedCount} novas ·{' '}
+                    {latestImportRun.dedupedCount} deduplicadas
+                  </small>
+                </article>
+                <article className="gf-card">
+                  <small>Escopo da execução</small>
+                  <strong>{formatImportScopeLabel(latestImportRun)}</strong>
+                  <small>{formatImportScopeDetail(latestImportRun)}</small>
+                </article>
+                <article className="gf-card">
+                  <small>Fontes monitoradas</small>
+                  <strong>{importHistory.sourceSummary.length}</strong>
+                  <small>
+                    {importHistory.latestFiles.length} arquivo(s) com status conhecido na visão atual
+                  </small>
+                </article>
+              </div>
+            ) : (
+              <p className="gf-muted">
+                Nenhum histórico de importação ainda. Rode a primeira importação para popular a Central de
+                Importação 2.0.
+              </p>
+            )}
+
+            {latestImportRun && (
+              <article className="gf-card">
+                <header className="gf-section-header">
+                  <div>
+                    <h5>Relatório pós-importação</h5>
+                    <p>Resumo acionável da base atual para corrigir o próximo problema útil.</p>
+                  </div>
+                </header>
+                <div className="gf-inline-grid gf-inline-grid-3">
+                  <div>
+                    <small>Arquivos com erro</small>
+                    <strong>{latestErroredFiles.length}</strong>
+                  </div>
+                  <div>
+                    <small>Avisos da última execução</small>
+                    <strong>{latestImportRun.warningCount}</strong>
+                  </div>
+                  <div>
+                    <small>Escopo executado</small>
+                    <strong>{formatImportScopeLabel(latestImportRun)}</strong>
+                  </div>
+                </div>
+                {(latestImportRun.errorMessage || latestImportRun.warnings.length > 0) && (
+                  <ul className="gf-warning-list">
+                    {latestImportRun.errorMessage && <li>{latestImportRun.errorMessage}</li>}
+                    {latestImportRun.warnings.slice(0, 2).map((warning) => (
+                      <li key={warning}>{warning}</li>
+                    ))}
+                  </ul>
+                )}
+                <div className="gf-inline-actions">
+                  {latestErroredFiles.length > 0 && (
+                    <button className="gf-button secondary" disabled={loading || importBusy} type="button" onClick={onImportFailedOnly}>
+                      Reprocessar falhas atuais
+                    </button>
+                  )}
+                  {latestErroredSources.slice(0, 2).map((item) => (
+                    <button
+                      key={item.sourceType}
+                      className="gf-button ghost"
+                      disabled={loading || importBusy}
+                      type="button"
+                      onClick={() =>
+                        onImportSelective({
+                          failedOnly: true,
+                          sourceTypes: [item.sourceType],
+                        })
+                      }
+                    >
+                      Falhas de {IMPORT_SOURCE_LABELS[item.sourceType] ?? item.sourceType}
+                    </button>
+                  ))}
+                  {recommendSecurityAction && (
+                    <button className="gf-button ghost" disabled={loading || importBusy} type="button" onClick={() => activateSection('security')}>
+                      Abrir Segurança
+                    </button>
+                  )}
+                </div>
+              </article>
+            )}
+
+            {importHistory.sourceSummary.length > 0 && (
+              <div className="gf-table-wrap">
+                <table className="gf-table gf-table-compact">
+                  <caption className="gf-sr-only">Resumo por fonte de importação</caption>
+                  <thead>
+                    <tr>
+                      <th scope="col">Fonte</th>
+                      <th scope="col">Arquivos</th>
+                      <th scope="col">Com erro</th>
+                      <th scope="col">Inseridas</th>
+                      <th scope="col">Deduplicadas</th>
+                      <th scope="col">Última atualização</th>
+                      <th scope="col">Ações</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {importHistory.sourceSummary.map((item) => (
+                      <tr key={item.sourceType}>
+                        <td>{IMPORT_SOURCE_LABELS[item.sourceType] ?? item.sourceType}</td>
+                        <td>
+                          {item.fileCount} total · {item.parsedCount} lidos
+                        </td>
+                        <td>{item.errorCount}</td>
+                        <td>{item.insertedCount}</td>
+                        <td>{item.dedupedCount}</td>
+                        <td>{shortDate(item.lastObservedAt)}</td>
+                        <td>
+                          <div className="gf-inline-actions">
+                            <button
+                              type="button"
+                              className="gf-button ghost"
+                              disabled={loading || importBusy}
+                              onClick={() => onImportSelective({ sourceTypes: [item.sourceType] })}
+                            >
+                              Reprocessar fonte
+                            </button>
+                            {item.errorCount > 0 && (
+                              <button
+                                type="button"
+                                className="gf-button ghost"
+                                disabled={loading || importBusy}
+                                onClick={() =>
+                                  onImportSelective({
+                                    failedOnly: true,
+                                    sourceTypes: [item.sourceType],
+                                  })
+                                }
+                              >
+                                Falhas da fonte
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {importHistory.runs.length > 0 && (
+              <div className="gf-table-wrap">
+                <table className="gf-table gf-table-compact">
+                  <caption className="gf-sr-only">Execuções recentes da importação</caption>
+                  <thead>
+                    <tr>
+                      <th scope="col">Quando</th>
+                      <th scope="col">Status</th>
+                      <th scope="col">Escopo</th>
+                      <th scope="col">Resultado</th>
+                      <th scope="col">Avisos</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {visibleImportRuns.map((run) => (
+                      <tr key={run.id}>
+                        <td>{shortDate(run.finishedAt || run.startedAt)}</td>
+                        <td>
+                          <span className={`gf-pill ${IMPORT_STATUS_TONE[run.status]}`.trim()}>
+                            {IMPORT_STATUS_LABELS[run.status]}
+                          </span>
+                        </td>
+                        <td>
+                          {formatImportScopeLabel(run)}
+                        </td>
+                        <td>
+                          {run.filesProcessed} arquivos · {run.insertedCount} novas · {run.dedupedCount} deduplicadas
+                        </td>
+                        <td>
+                          {run.errorMessage
+                            ? run.errorMessage
+                            : run.warnings[0] || `${run.warningCount} aviso(s)`}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            {importHistory.runs.length > historyRunsPageSize && (
+              <div className="gf-pagination">
+                <div className="gf-inline-actions">
+                  <button
+                    type="button"
+                    className="gf-button ghost"
+                    disabled={currentHistoryRunsPage <= 1}
+                    onClick={() => setHistoryRunsPage(currentHistoryRunsPage - 1)}
+                  >
+                    Anterior
+                  </button>
+                  <span className="gf-muted" role="status" aria-live="polite">
+                    Execuções {currentHistoryRunsPage} de {totalHistoryRunPages}
+                  </span>
+                  <button
+                    type="button"
+                    className="gf-button ghost"
+                    disabled={currentHistoryRunsPage >= totalHistoryRunPages}
+                    onClick={() => setHistoryRunsPage(Math.min(totalHistoryRunPages, currentHistoryRunsPage + 1))}
+                  >
+                    Próxima
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {importHistory.latestFiles.length > 0 && (
+              <div className="gf-table-wrap">
+                <table className="gf-table gf-table-compact">
+                  <caption className="gf-sr-only">Último status conhecido por arquivo</caption>
+                  <thead>
+                    <tr>
+                      <th scope="col">Arquivo</th>
+                      <th scope="col">Fonte</th>
+                      <th scope="col">Status</th>
+                      <th scope="col">Resultado</th>
+                      <th scope="col">Observado em</th>
+                      <th scope="col">Ações</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {visibleLatestFiles.map((item) => (
+                      <tr key={`${item.path}-${item.observedAt}`}>
+                        <td>
+                          <strong>{item.name || item.path.split(/[\\/]/).pop() || item.path}</strong>
+                          <br />
+                          <small>{item.path}</small>
+                        </td>
+                        <td>{IMPORT_SOURCE_LABELS[item.sourceType] ?? item.sourceType}</td>
+                        <td>
+                          <span
+                            className={`gf-pill ${
+                              item.status === 'parsed'
+                                ? 'gf-pill-ok'
+                                : item.status === 'error'
+                                  ? 'gf-pill-divergent'
+                                  : 'gf-pill-warning'
+                            }`.trim()}
+                          >
+                            {item.status === 'parsed' ? 'Lido' : item.status === 'error' ? 'Erro' : item.status}
+                          </span>
+                        </td>
+                        <td>
+                          {item.transactionCount} mov. · {item.insertedCount} novas · {item.dedupedCount} deduplicadas
+                          {item.errorMessage && (
+                            <>
+                              <br />
+                              <small>{item.errorMessage}</small>
+                            </>
+                          )}
+                        </td>
+                        <td>{shortDate(item.observedAt)}</td>
+                        <td>
+                          <div className="gf-inline-actions">
+                            <button
+                              type="button"
+                              className="gf-button ghost"
+                              disabled={loading || importBusy}
+                              onClick={() => onImportSelective({ includePaths: [item.path] })}
+                            >
+                              Reprocessar arquivo
+                            </button>
+                            {item.status === 'error' && (
+                              <button
+                                type="button"
+                                className="gf-button ghost"
+                                disabled={loading || importBusy}
+                                onClick={() => onImportSelective({ failedOnly: true, includePaths: [item.path] })}
+                              >
+                                Somente falha
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            {importHistory.latestFiles.length > latestFilesPageSize && (
+              <div className="gf-pagination">
+                <div className="gf-inline-actions">
+                  <button
+                    type="button"
+                    className="gf-button ghost"
+                    disabled={currentLatestFilesPage <= 1}
+                    onClick={() => setLatestFilesPage(currentLatestFilesPage - 1)}
+                  >
+                    Anterior
+                  </button>
+                  <span className="gf-muted" role="status" aria-live="polite">
+                    Arquivos {currentLatestFilesPage} de {totalLatestFilesPages}
+                  </span>
+                  <button
+                    type="button"
+                    className="gf-button ghost"
+                    disabled={currentLatestFilesPage >= totalLatestFilesPages}
+                    onClick={() => setLatestFilesPage(Math.min(totalLatestFilesPages, currentLatestFilesPage + 1))}
+                  >
+                    Próxima
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
         </section>
       )}
 
@@ -531,12 +1098,12 @@ export function SettingsTab({
             />
           </label>
           <div className="gf-inline-actions">
-            <button className="gf-button" disabled={loading} type="button" onClick={onSavePassword}>
-              Salvar senha
-            </button>
-            <button className="gf-button ghost" disabled={loading} type="button" onClick={onTestPassword}>
-              Testar senha
-            </button>
+              <button className="gf-button" disabled={loading || importBusy} type="button" onClick={onSavePassword}>
+                Salvar senha
+              </button>
+              <button className="gf-button ghost" disabled={loading || importBusy} type="button" onClick={onTestPassword}>
+                Testar senha
+              </button>
           </div>
           {passwordTestMessage && (
             <p className={passwordTestOk ? 'gf-feedback ok' : 'gf-feedback error'}>{passwordTestMessage}</p>
@@ -548,7 +1115,7 @@ export function SettingsTab({
               <button
                 type="button"
                 className="gf-button ghost"
-                disabled={loading}
+                disabled={loading || importBusy}
                 onClick={() => onRefreshErrorTrail?.()}
               >
                 Atualizar trilha
@@ -581,7 +1148,7 @@ export function SettingsTab({
           <header className="gf-section-header">
             <div>
               <h3>Preferências de interface</h3>
-              <p>Modo simples/avançado, densidade e flags de rollout.</p>
+              <p>Modo simples/avançado, densidade e preferências operacionais da V2.</p>
             </div>
           </header>
           <div className="gf-inline-grid gf-inline-grid-3">
@@ -639,7 +1206,7 @@ export function SettingsTab({
           </div>
 
           <div className="gf-toggle-grid">
-            {FEATURE_FLAG_LABELS.map((flag) => (
+            {RUNTIME_FEATURE_FLAG_LABELS.map((flag) => (
               <label key={flag.key} className="gf-toggle">
                 <input
                   type="checkbox"
@@ -655,6 +1222,31 @@ export function SettingsTab({
               </label>
             ))}
           </div>
+
+          <details className="gf-details">
+            <summary>Compatibilidade temporária e rollout técnico</summary>
+            <p className="gf-muted">
+              Controles transitórios usados enquanto a V2 ainda convive com caminhos de fallback. Eles
+              não devem permanecer expostos na release final da 2.0.0.
+            </p>
+            <div className="gf-toggle-grid">
+              {TRANSITION_FEATURE_FLAG_LABELS.map((flag) => (
+                <label key={flag.key} className="gf-toggle">
+                  <input
+                    type="checkbox"
+                    checked={featureFlags[flag.key]}
+                    onChange={(event) =>
+                      onFeatureFlagsChange({
+                        ...featureFlags,
+                        [flag.key]: event.target.checked,
+                      })
+                    }
+                  />
+                  <span>{flag.label}</span>
+                </label>
+              ))}
+            </div>
+          </details>
 
           <div className="gf-onboarding-box">
             <h4>Onboarding guiado</h4>
@@ -1084,6 +1676,8 @@ export function SettingsTab({
     </div>
   )
 }
+
+
 
 
 

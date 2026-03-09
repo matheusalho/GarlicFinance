@@ -75,6 +75,8 @@ interface PlanningTabProps {
   onRunProjection: (scenario: ProjectionScenario) => void
   categoryOptions: CategoryOption[]
   subcategoriesByCategory: Record<string, SubcategoryItem[]>
+  hasImportedFinancialData?: boolean
+  onOpenFirstUseSetup?: () => void
 }
 
 export function LegacyPlanningTab({

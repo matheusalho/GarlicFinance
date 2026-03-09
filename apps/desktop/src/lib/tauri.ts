@@ -6,8 +6,15 @@ import type {
   FeatureFlagsV1,
   GoalAllocationItem,
   GoalListItem,
+  ImportHistoryResponse,
+  ImportJobStatusResponse,
+  ImportRunFileItem,
   ImportRunResponse,
+  ImportRunScope,
+  ImportRunStatus,
+  ImportRunSummaryItem,
   ImportScanResponse,
+  ImportSourceSummaryItem,
   MonthlyBudgetSummaryResponse,
   OnboardingStateV1,
   ProjectionScenario,
@@ -35,6 +42,10 @@ const MOCK_RULES_KEY = 'garlic.mock.rules-v1'
 const MOCK_TRANSACTIONS_KEY = 'garlic.mock.transactions-v1'
 const MOCK_BUDGETS_KEY = 'garlic.mock.monthly-budgets-v1'
 const MOCK_APP_EVENTS_KEY = 'garlic.mock.app-events-v1'
+const MOCK_BTG_PASSWORD_KEY = 'garlic.mock.btg-password'
+const MOCK_IMPORT_RUNS_KEY = 'garlic.mock.import-runs-v2'
+const MOCK_IMPORT_RUN_FILES_KEY = 'garlic.mock.import-run-files-v2'
+const MOCK_IMPORT_JOBS_KEY = 'garlic.mock.import-jobs-v2'
 
 const defaultUiPreferences = (): UiPreferencesV1 => ({
   theme: 'light',
@@ -57,6 +68,8 @@ const defaultFeatureFlags = (): FeatureFlagsV1 => ({
   newPlanningEnabled: true,
   newSettingsEnabled: true,
   onboardingEnabled: true,
+  idleTabPrefetchEnabled: true,
+  v2AsyncJobsEnabled: true,
 })
 
 const defaultMockCategories = (): CategoryTreeItem[] => [
@@ -626,6 +639,106 @@ const writeStorageJson = (key: string, value: unknown): void => {
   window.localStorage.setItem(key, JSON.stringify(value))
 }
 
+const readMockImportRuns = (): ImportRunSummaryItem[] =>
+  readStorageJson<ImportRunSummaryItem[]>(MOCK_IMPORT_RUNS_KEY, () => [])
+
+const writeMockImportRuns = (runs: ImportRunSummaryItem[]): void => {
+  writeStorageJson(MOCK_IMPORT_RUNS_KEY, runs)
+}
+
+const readMockImportRunFiles = (): ImportRunFileItem[] =>
+  readStorageJson<ImportRunFileItem[]>(MOCK_IMPORT_RUN_FILES_KEY, () => [])
+
+const readMockImportJobs = (): ImportJobStatusResponse[] =>
+  readStorageJson<ImportJobStatusResponse[]>(MOCK_IMPORT_JOBS_KEY, () => [])
+
+const writeMockImportJobs = (jobs: ImportJobStatusResponse[]): void => {
+  writeStorageJson(MOCK_IMPORT_JOBS_KEY, jobs)
+}
+
+const upsertMockImportJob = (job: ImportJobStatusResponse): void => {
+  const jobs = readMockImportJobs()
+  const nextJobs = [job, ...jobs.filter((item) => item.jobId !== job.jobId)].slice(0, 12)
+  writeMockImportJobs(nextJobs)
+}
+
+const completeMockImportJob = (jobId: string): void => {
+  const jobs = readMockImportJobs()
+  const job = jobs.find((item) => item.jobId === jobId)
+  if (!job || job.status !== 'queued' && job.status !== 'running') return
+
+  const finishedAt = new Date().toISOString()
+  const warnings = ['UI em modo navegador. Para importar de verdade, rode no runtime Tauri.']
+  const result: ImportRunResponse = {
+    runId: job.runId,
+    status: 'noop',
+    filesProcessed: 0,
+    inserted: 0,
+    deduped: 0,
+    warnings,
+    files: [],
+  }
+  const completedJob: ImportJobStatusResponse = {
+    ...job,
+    status: 'noop',
+    phase: 'completed',
+    progressPercent: 100,
+    current: 0,
+    total: 0,
+    message: 'Importação simulada concluída no modo navegador.',
+    finishedAt,
+    warnings,
+    errorMessage: '',
+    result,
+  }
+  upsertMockImportJob(completedJob)
+
+  const runs = readMockImportRuns()
+  const runIndex = runs.findIndex((item) => item.id === job.runId)
+  if (runIndex >= 0) {
+    const nextRuns = [...runs]
+    nextRuns[runIndex] = {
+      ...nextRuns[runIndex],
+      finishedAt,
+      status: 'noop',
+      warningCount: warnings.length,
+      warnings,
+      filesProcessed: 0,
+      insertedCount: 0,
+      dedupedCount: 0,
+      errorMessage: '',
+    }
+    writeMockImportRuns(nextRuns)
+  }
+}
+
+const buildMockImportSourceSummary = (
+  latestFiles: ImportRunFileItem[],
+): ImportSourceSummaryItem[] => {
+  const summaryBySource = new Map<string, ImportSourceSummaryItem>()
+  for (const item of latestFiles) {
+    const current = summaryBySource.get(item.sourceType) ?? {
+      sourceType: item.sourceType,
+      fileCount: 0,
+      parsedCount: 0,
+      errorCount: 0,
+      insertedCount: 0,
+      dedupedCount: 0,
+      lastObservedAt: item.observedAt,
+    }
+
+    current.fileCount += 1
+    if (item.status === 'parsed') current.parsedCount += 1
+    if (item.status === 'error') current.errorCount += 1
+    current.insertedCount += item.insertedCount
+    current.dedupedCount += item.dedupedCount
+    if (item.observedAt > current.lastObservedAt) current.lastObservedAt = item.observedAt
+    summaryBySource.set(item.sourceType, current)
+  }
+
+  return [...summaryBySource.values()].sort((left, right) => left.sourceType.localeCompare(right.sourceType))
+}
+
 type ObservabilityLevel = 'info' | 'warn' | 'error'
 
 interface ObservabilityLogInput {
@@ -635,6 +748,19 @@ interface ObservabilityLogInput {
   message: string
   contextJson?: string
 }
+
+const TIMED_COMMANDS = new Set([
+  'import_scan',
+  'import_run',
+  'import_history',
+  'dashboard_summary',
+  'transactions_list',
+  'transactions_review_queue',
+  'reconciliation_summary',
+  'budget_summary',
+  'projection_run',
+])
+const WARN_COMMAND_DURATION_MS = 450
 
 const SENSITIVE_LOG_KEY = /password|secret|token|authorization|credential|btgpassword/i
 
@@ -662,6 +788,11 @@ const normalizeErrorMessage = (error: unknown): string => {
   const value = String(error ?? 'Erro desconhecido')
   return value.length > 500 ? `${value.slice(0, 500)}...` : value
 }
+
+const nowMs = (): number =>
+  typeof performance !== 'undefined' && typeof performance.now === 'function'
+    ? performance.now()
+    : Date.now()
 
 const readMockAppEvents = (): AppEventLogItem[] =>
   readStorageJson<AppEventLogItem[]>(MOCK_APP_EVENTS_KEY, () => [])
@@ -693,15 +824,182 @@ const browserMock = async <T>(
   switch (command) {
     case 'import_scan':
       return { candidates: [] } as T
-    case 'import_run':
+    case 'import_run': {
+      const basePath = String(args.basePath ?? '').trim()
+      const reprocess = Boolean(args.reprocess)
+      const failedOnly = Boolean(args.failedOnly)
+      const rawScope = (args.scope ?? {}) as Partial<ImportRunScope>
+      const runs = readMockImportRuns()
+      const runId = runs.length > 0 ? Math.max(...runs.map((item) => item.id)) + 1 : 1
+      const warnings = ['UI em modo navegador. Para importar de verdade, rode no runtime Tauri.']
+      const includePaths = Array.isArray(rawScope.includePaths)
+        ? rawScope.includePaths.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+        : []
+      const sourceTypes = Array.isArray(rawScope.sourceTypes)
+        ? rawScope.sourceTypes.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+        : []
+      const requestedScope: ImportRunScope = {
+        mode:
+          typeof rawScope.mode === 'string' && rawScope.mode.trim()
+            ? rawScope.mode.trim()
+            : sourceTypes.length > 0
+              ? failedOnly
+                ? 'source_failed_only'
+                : reprocess
+                  ? 'source_reprocess'
+                  : 'source_selection'
+              : includePaths.length > 0
+                ? failedOnly
+                  ? 'path_failed_only'
+                  : reprocess
+                    ? 'path_reprocess'
+                    : 'path_selection'
+                : failedOnly
+                  ? 'failed_only'
+                  : reprocess
+                    ? 'reprocess_all'
+                    : 'all',
+        includePaths,
+        sourceTypes,
+      }
+      const run: ImportRunSummaryItem = {
+        id: runId,
+        basePath,
+        startedAt: new Date().toISOString(),
+        finishedAt: new Date().toISOString(),
+        status: 'noop',
+        reprocess,
+        failedOnly,
+        requestedScope,
+        filesDiscovered: 0,
+        filesProcessed: 0,
+        insertedCount: 0,
+        dedupedCount: 0,
+        warningCount: warnings.length,
+        warnings,
+        errorMessage: '',
+      }
+      writeMockImportRuns([run, ...runs].slice(0, 50))
       return {
+        runId,
+        status: 'noop',
         filesProcessed: 0,
         inserted: 0,
         deduped: 0,
-        warnings: [
-          'UI em modo navegador. Para importar de verdade, rode no runtime Tauri.',
-        ],
+        warnings,
+        files: [],
       } as T
+    }
+    case 'import_job_start': {
+      const basePath = String(args.basePath ?? '').trim()
+      const reprocess = Boolean(args.reprocess)
+      const failedOnly = Boolean(args.failedOnly)
+      const rawScope = (args.scope ?? {}) as Partial<ImportRunScope>
+      const runs = readMockImportRuns()
+      const runId = runs.length > 0 ? Math.max(...runs.map((item) => item.id)) + 1 : 1
+      const jobs = readMockImportJobs()
+      const nextJobNumericId =
+        jobs.length > 0
+          ? Math.max(
+              ...jobs.map((item) => {
+                const match = item.jobId.match(/(\d+)$/)
+                return match ? Number(match[1]) : 0
+              }),
+            ) + 1
+          : 1
+      const includePaths = Array.isArray(rawScope.includePaths)
+        ? rawScope.includePaths.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+        : []
+      const sourceTypes = Array.isArray(rawScope.sourceTypes)
+        ? rawScope.sourceTypes.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+        : []
+      const requestedScope: ImportRunScope = {
+        mode:
+          typeof rawScope.mode === 'string' && rawScope.mode.trim()
+            ? rawScope.mode.trim()
+            : sourceTypes.length > 0
+              ? failedOnly
+                ? 'source_failed_only'
+                : reprocess
+                  ? 'source_reprocess'
+                  : 'source_selection'
+              : includePaths.length > 0
+                ? failedOnly
+                  ? 'path_failed_only'
+                  : reprocess
+                    ? 'path_reprocess'
+                    : 'path_selection'
+                : failedOnly
+                  ? 'failed_only'
+                  : reprocess
+                    ? 'reprocess_all'
+                    : 'all',
+        includePaths,
+        sourceTypes,
+      }
+      writeMockImportRuns(
+        [
+          {
+            id: runId,
+            basePath,
+            startedAt: new Date().toISOString(),
+            finishedAt: '',
+            status: 'running' as ImportRunStatus,
+            reprocess,
+            failedOnly,
+            requestedScope,
+            filesDiscovered: 0,
+            filesProcessed: 0,
+            insertedCount: 0,
+            dedupedCount: 0,
+            warningCount: 0,
+            warnings: [],
+            errorMessage: '',
+          },
+          ...runs,
+        ].slice(0, 50),
+      )
+      const job: ImportJobStatusResponse = {
+        jobId: `import-job-${nextJobNumericId}`,
+        runId,
+        status: 'running',
+        phase: 'parsing_sources',
+        progressPercent: 18,
+        current: 0,
+        total: 0,
+        message: 'Simulando importação no modo navegador...',
+        startedAt: new Date().toISOString(),
+        finishedAt: '',
+        warnings: [],
+        errorMessage: '',
+        result: null,
+      }
+      upsertMockImportJob(job)
+      window.setTimeout(() => completeMockImportJob(job.jobId), 30)
+      return job as T
+    }
+    case 'import_job_status': {
+      const jobId = String(args.jobId ?? '').trim()
+      const job = readMockImportJobs().find((item) => item.jobId === jobId)
+      if (!job) throw new Error('Job de importacao nao encontrado no mock local.')
+      return job as T
+    }
+    case 'import_history': {
+      const basePath = String(args.basePath ?? '').trim()
+      const limitArg = Number(args.limit ?? 8)
+      const limit = Number.isFinite(limitArg) ? Math.max(1, Math.min(20, Math.trunc(limitArg))) : 8
+      const runs = readMockImportRuns()
+        .filter((item) => !basePath || item.basePath.startsWith(basePath))
+        .slice(0, limit)
+      const latestFiles = readMockImportRunFiles()
+        .filter((item) => !basePath || item.path.startsWith(basePath))
+        .slice(0, limit * 8)
+      return {
+        runs,
+        latestFiles,
+        sourceSummary: buildMockImportSourceSummary(latestFiles),
+      } as T
+    }
     case 'transactions_list':
       {
         const filters = readBrowserTransactionFilters(args.filters)
@@ -1161,10 +1459,23 @@ const browserMock = async <T>(
         .slice(0, limit)
       return events as T
     }
-    case 'settings_password_set':
+    case 'settings_password_set': {
+      const secret = String((args.input as { secret?: string } | undefined)?.secret ?? '').trim()
+      if (secret) window.localStorage.setItem(MOCK_BTG_PASSWORD_KEY, secret)
+      else window.localStorage.removeItem(MOCK_BTG_PASSWORD_KEY)
       return { ok: true } as T
-    case 'settings_password_test':
-      return { ok: false, message: 'Modo navegador sem Credential Manager.' } as T
+    }
+    case 'settings_password_status': {
+      const secret = window.localStorage.getItem(MOCK_BTG_PASSWORD_KEY) ?? ''
+      return { exists: secret.trim().length > 0 } as T
+    }
+    case 'settings_password_test': {
+      const secret = window.localStorage.getItem(MOCK_BTG_PASSWORD_KEY) ?? ''
+      if (!secret.trim()) {
+        return { ok: false, message: 'Senha BTG não cadastrada no mock local.' } as T
+      }
+      return { ok: true, message: 'Senha BTG cadastrada no mock local.' } as T
+    }
     case 'settings_auto_import_get': {
       const value = window.localStorage.getItem(MOCK_AUTO_IMPORT_KEY)
       const enabled = value ? Boolean(JSON.parse(value)) : false
@@ -1364,13 +1675,48 @@ const reportCommandFailure = async (
   }
 }
 
+const reportCommandTiming = async (
+  invoke: InvokeFn,
+  runtimeScope: 'tauri' | 'browser_mock',
+  command: string,
+  args: Record<string, unknown> | undefined,
+  durationMs: number,
+): Promise<void> => {
+  const normalizedDuration = Number(durationMs.toFixed(2))
+  const payload: ObservabilityLogInput = {
+    level: normalizedDuration >= WARN_COMMAND_DURATION_MS ? 'warn' : 'info',
+    eventType: 'frontend.command.timing',
+    scope: command,
+    message: `Comando ${command} concluido em ${normalizedDuration}ms`,
+    contextJson: JSON.stringify({
+      command,
+      durationMs: normalizedDuration,
+      runtime: runtimeScope,
+      args: sanitizeLogContext(args ?? {}),
+      timestamp: new Date().toISOString(),
+    }),
+  }
+  try {
+    await invoke<{ ok: boolean }>('observability_log_event', { input: payload })
+  } catch {
+    appendMockAppEvent(payload)
+  }
+}
+
 const getInvoke = async (): Promise<InvokeFn> => {
   const isTauriRuntime = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
   const rawInvoke = isTauriRuntime ? (await import('@tauri-apps/api/core')).invoke : browserMock
+  const runtimeScope: 'tauri' | 'browser_mock' = isTauriRuntime ? 'tauri' : 'browser_mock'
 
   return async <T>(command: string, args?: Record<string, unknown>): Promise<T> => {
+    const startedAt = nowMs()
     try {
-      return await rawInvoke<T>(command, args)
+      const result = await rawInvoke<T>(command, args)
+      if (command !== 'observability_log_event' && TIMED_COMMANDS.has(command)) {
+        const durationMs = nowMs() - startedAt
+        void reportCommandTiming(rawInvoke, runtimeScope, command, args, durationMs)
+      }
+      return result
     } catch (error) {
       if (command !== 'observability_log_event') {
         await reportCommandFailure(rawInvoke, command, args, error)
@@ -1385,9 +1731,39 @@ export const commands = {
     const invoke = await getInvoke()
     return invoke<ImportScanResponse>('import_scan', { basePath })
   },
-  async importRun(basePath: string, reprocess = false): Promise<ImportRunResponse> {
+  async importRun(
+    basePath: string,
+    reprocess = false,
+    failedOnly = false,
+    scope?: Partial<ImportRunScope>,
+  ): Promise<ImportRunResponse> {
     const invoke = await getInvoke()
-    return invoke<ImportRunResponse>('import_run', { basePath, reprocess })
+    return invoke<ImportRunResponse>('import_run', { basePath, reprocess, failedOnly, scope })
+  },
+  async importJobStart(
+    basePath: string,
+    reprocess = false,
+    failedOnly = false,
+    scope?: Partial<ImportRunScope>,
+  ): Promise<ImportJobStatusResponse> {
+    const invoke = await getInvoke()
+    return invoke<ImportJobStatusResponse>('import_job_start', {
+      basePath,
+      reprocess,
+      failedOnly,
+      scope,
+    })
+  },
+  async importJobStatus(jobId: string): Promise<ImportJobStatusResponse> {
+    const invoke = await getInvoke()
+    return invoke<ImportJobStatusResponse>('import_job_status', { jobId })
+  },
+  async importHistory(basePath?: string, limit = 8): Promise<ImportHistoryResponse> {
+    const invoke = await getInvoke()
+    return invoke<ImportHistoryResponse>('import_history', {
+      basePath,
+      limit,
+    })
   },
   async transactionsList(filters: Record<string, unknown>): Promise<TransactionsListResponse> {
     const invoke = await getInvoke()
@@ -1628,6 +2004,12 @@ export const commands = {
     const invoke = await getInvoke()
     return invoke<{ ok: boolean }>('settings_password_set', {
       input: { provider: 'btg', secret },
+    })
+  },
+  async settingsPasswordStatus(): Promise<{ exists: boolean }> {
+    const invoke = await getInvoke()
+    return invoke<{ exists: boolean }>('settings_password_status', {
+      input: { provider: 'btg' },
     })
   },
   async settingsPasswordTest(): Promise<{ ok: boolean; message: string }> {

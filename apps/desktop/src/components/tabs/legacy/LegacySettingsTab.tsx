@@ -1,5 +1,6 @@
 import type { FormEvent } from 'react'
 
+import { FirstUseJourneyCard } from '../../common/FirstUseJourneyCard'
 import { brl, shortDate } from '../../../lib/format'
 import type {
   AppEventLogItem,
@@ -7,6 +8,7 @@ import type {
   CategorizationRuleItem,
   RulesDryRunResponse,
 } from '../../../types'
+import type { FirstUseJourneyCardProps } from '../../common/FirstUseJourneyCard'
 
 interface CategoryOption {
   id: string
@@ -27,7 +29,10 @@ interface SettingsTabProps {
   autoImportLoaded: boolean
   onToggleAutoImport: (enabled: boolean) => void
   onImport: (reprocess: boolean) => void
+  onImportFailedOnly: () => void
+  onImportSelective?: (options: { failedOnly?: boolean; sourceTypes?: string[]; includePaths?: string[] }) => void
   importWarnings: string[]
+  btgPasswordConfigured: boolean
   btgPasswordInput: string
   onBtgPasswordInputChange: (value: string) => void
   onSavePassword: () => void
@@ -73,6 +78,7 @@ interface SettingsTabProps {
   onRuleApplyBatch: () => Promise<void>
   errorTrail?: AppEventLogItem[]
   onRefreshErrorTrail?: () => void
+  firstUseJourneyCard?: FirstUseJourneyCardProps | null
 }
 
 export function LegacySettingsTab({
@@ -83,7 +89,9 @@ export function LegacySettingsTab({
   autoImportLoaded,
   onToggleAutoImport,
   onImport,
+  onImportFailedOnly,
   importWarnings,
+  btgPasswordConfigured,
   btgPasswordInput,
   onBtgPasswordInputChange,
   onSavePassword,
@@ -118,6 +126,7 @@ export function LegacySettingsTab({
   onRuleApplyBatch,
   errorTrail,
   onRefreshErrorTrail,
+  firstUseJourneyCard,
 }: SettingsTabProps) {
   const recentErrors = errorTrail ?? []
 
@@ -134,6 +143,8 @@ export function LegacySettingsTab({
 
   return (
     <>
+      {firstUseJourneyCard && <FirstUseJourneyCard {...firstUseJourneyCard} />}
+
       <section className="panel grid two">
         <article>
           <h2>Importação mensal</h2>
@@ -161,9 +172,17 @@ export function LegacySettingsTab({
                 : 'Desativado: use os botões abaixo para iniciar a importação quando desejar.'}
             </small>
           </label>
+          {!btgPasswordConfigured && (
+            <p className="feedback error">
+              Arquivos BTG de cartao exigem senha cadastrada em <strong>Senha BTG</strong>.
+            </p>
+          )}
           <div className="inline-actions">
             <button disabled={loading} type="button" onClick={() => onImport(false)}>
               Importar novos arquivos
+            </button>
+            <button disabled={loading} type="button" className="ghost" onClick={onImportFailedOnly}>
+              Reprocessar falhas
             </button>
             <button disabled={loading} type="button" className="ghost" onClick={() => onImport(true)}>
               Reprocessar tudo

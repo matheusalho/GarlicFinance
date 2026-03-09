@@ -90,6 +90,48 @@ describe('tauri commands browser mock - goal scenario allocations', () => {
   })
 })
 
+describe('tauri commands browser mock - import center history', () => {
+  beforeEach(() => {
+    setBrowserMockWindow()
+  })
+
+  it('tracks noop import runs and lists import history in browser mode', async () => {
+    const run = await commands.importRun('C:\\ArquivosFinance', true, true, {
+      sourceTypes: ['btg_card_encrypted_xlsx'],
+    })
+    expect(run.runId).toBe(1)
+    expect(run.status).toBe('noop')
+
+    const scope = globalThis as unknown as { window: Window & typeof globalThis }
+    scope.window.localStorage.setItem(
+      'garlic.mock.import-run-files-v2',
+      JSON.stringify([
+        {
+          importRunId: 1,
+          path: 'C:\\ArquivosFinance\\CartaoBTG\\arquivo.xlsx',
+          name: 'arquivo.xlsx',
+          fileHash: 'hash-1',
+          sourceType: 'btg_card_encrypted_xlsx',
+          status: 'error',
+          transactionCount: 0,
+          insertedCount: 0,
+          dedupedCount: 0,
+          errorMessage: 'Senha inválida',
+          observedAt: '2026-03-07T10:01:00Z',
+        },
+      ]),
+    )
+
+    const history = await commands.importHistory('C:\\ArquivosFinance', 8)
+    expect(history.runs).toHaveLength(1)
+    expect(history.runs[0]?.failedOnly).toBe(true)
+    expect(history.runs[0]?.requestedScope.sourceTypes).toEqual(['btg_card_encrypted_xlsx'])
+    expect(history.latestFiles[0]?.status).toBe('error')
+    expect(history.sourceSummary[0]?.sourceType).toBe('btg_card_encrypted_xlsx')
+    expect(history.sourceSummary[0]?.errorCount).toBe(1)
+  })
+})
+
 describe('tauri commands browser mock - categorization rules', () => {
   beforeEach(() => {
     setBrowserMockWindow()
@@ -373,5 +415,26 @@ describe('tauri commands browser mock - observability', () => {
     const trail = await commands.observabilityErrorTrail(20)
     const hit = trail.find((item) => item.eventType === 'frontend.command.error' && item.scope === 'rules_upsert')
     expect(hit).toBeTruthy()
+  })
+
+  it('registers timing telemetry for tracked commands', async () => {
+    await commands.transactionsList({ limit: 10, offset: 0 })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    const scope = globalThis as unknown as { window: Window & typeof globalThis }
+    const raw = scope.window.localStorage.getItem('garlic.mock.app-events-v1') ?? '[]'
+    const events = JSON.parse(raw) as Array<{
+      eventType: string
+      scope: string
+      contextJson: string
+    }>
+    const timingEvent = events.find(
+      (item) => item.eventType === 'frontend.command.timing' && item.scope === 'transactions_list',
+    )
+    expect(timingEvent).toBeTruthy()
+
+    const parsedContext = JSON.parse(timingEvent?.contextJson ?? '{}') as { durationMs?: number }
+    expect(typeof parsedContext.durationMs).toBe('number')
+    expect(Number.isFinite(parsedContext.durationMs)).toBe(true)
   })
 })

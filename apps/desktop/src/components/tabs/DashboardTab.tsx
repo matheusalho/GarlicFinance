@@ -1,21 +1,8 @@
-import { useState } from 'react'
+import { Suspense, lazy, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
-import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  Cell,
-  Line,
-  LineChart,
-  Pie,
-  PieChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from 'recharts'
 
-import { ChartErrorBoundary } from '../charts/ChartErrorBoundary'
+import { FirstUseJourneyCard } from '../common/FirstUseJourneyCard'
+import { GuidedEmptyState } from '../common/GuidedEmptyState'
 import { brl, shortDate } from '../../lib/format'
 import type {
   DashboardSummaryResponse,
@@ -23,27 +10,41 @@ import type {
   ReconciliationSummaryResponse,
   TransactionItem,
 } from '../../types'
+import type { FirstUseJourneyCardProps } from '../common/FirstUseJourneyCard'
 
 interface DashboardTabProps {
   dashboard: DashboardSummaryResponse | null
   uncategorizedCount: number
   transactions: TransactionItem[]
+  hasImportedFinancialData: boolean
+  firstUseJourneyCard?: FirstUseJourneyCardProps | null
   reconciliation: ReconciliationSummaryResponse | null
   monthlyBudgetSummary?: MonthlyBudgetSummaryResponse | null
   onOpenBudgetPlanner?: () => void
   onOpenTransactions?: () => void
   onOpenTransactionsByAccount?: (accountType: 'checking' | 'credit_card') => void
+  onOpenFirstUseSetup?: () => void
+  onOpenImportSettings?: () => void
   onAddManualSnapshot?: (input: {
     accountType: 'checking' | 'credit_card'
     occurredAt: string
     balanceInput: string
     descriptionRaw: string
   }) => Promise<boolean>
+  onBootstrapSegmentVisible?: (segment: 'initial_tab' | 'initial_cards') => void
   chartsEnabled: boolean
   mode: 'simple' | 'advanced'
 }
 
-const CHART_COLORS = ['#0f766e', '#1d4ed8', '#f59e0b', '#ef4444', '#7c3aed', '#334155']
+const LazyDashboardTrendChartCard = lazy(async () => {
+  const module = await import('./DashboardCharts')
+  return { default: module.DashboardTrendChartCard }
+})
+
+const LazyDashboardCategoryChartsSection = lazy(async () => {
+  const module = await import('./DashboardCharts')
+  return { default: module.DashboardCategoryChartsSection }
+})
 
 const asFiniteNumber = (value: unknown): number => {
   const parsed = Number(value)
@@ -57,16 +58,42 @@ const RECON_STATUS_LABEL: Record<'ok' | 'warning' | 'divergent' | 'no_snapshot',
   no_snapshot: 'Sem snapshot',
 }
 
+const buildReconciliationPeriodHint = (reconciliation: ReconciliationSummaryResponse | null): string => {
+  const start = reconciliation?.periodStart ?? '-'
+  const end = reconciliation?.periodEnd ?? '-'
+  return `Periodo analisado: ${start} ate ${end}`
+}
+
+const buildAccountDetailsHint = (account: {
+  snapshotAt: string
+  snapshotCents: number | null
+  divergenceCents: number | null
+  periodNetCents: number
+}): string => {
+  const snapshotText = account.snapshotAt
+    ? `Snapshot: ${shortDate(account.snapshotAt)} | ${brl(account.snapshotCents ?? 0)}`
+    : 'Snapshot: nao informado'
+  const divergenceText =
+    account.divergenceCents === null ? 'Divergencia: nao calculada' : `Divergencia: ${brl(account.divergenceCents)}`
+  const movementText = `Movimento no periodo: ${brl(account.periodNetCents)}`
+  return `${snapshotText}\n${divergenceText}\n${movementText}`
+}
+
 export function DashboardTab({
   dashboard,
   uncategorizedCount,
   transactions,
+  hasImportedFinancialData,
+  firstUseJourneyCard,
   reconciliation,
   monthlyBudgetSummary,
   onOpenBudgetPlanner,
   onOpenTransactions,
   onOpenTransactionsByAccount,
+  onOpenFirstUseSetup,
+  onOpenImportSettings,
   onAddManualSnapshot,
+  onBootstrapSegmentVisible,
   chartsEnabled,
   mode,
 }: DashboardTabProps) {
@@ -82,6 +109,16 @@ export function DashboardTab({
   const [snapshotBalance, setSnapshotBalance] = useState('')
   const [snapshotDescription, setSnapshotDescription] = useState('')
   const effectiveShowExtended = mode === 'advanced' || showExtended
+  const loggedSegmentsRef = useRef({
+    initial_tab: false,
+    initial_cards: false,
+  })
+
+  const markSegment = (segment: 'initial_tab' | 'initial_cards') => {
+    if (loggedSegmentsRef.current[segment]) return
+    loggedSegmentsRef.current[segment] = true
+    onBootstrapSegmentVisible?.(segment)
+  }
 
   const series = dashboard?.series ?? []
   const topCategories = dashboard?.topCategories ?? []
@@ -148,9 +185,94 @@ export function DashboardTab({
     }
   }
 
+  const trendChartFallback = (
+    <article className="gf-card">
+      <header className="gf-section-header">
+        <div>
+          <h3>Tendencia mensal</h3>
+          <p>Carregando visualizacao analitica.</p>
+        </div>
+      </header>
+      <div className="gf-empty">
+        <p>Preparando grafico do periodo.</p>
+      </div>
+    </article>
+  )
+
+  const categoryChartsFallback = (
+    <section className="gf-grid gf-grid-2">
+      <article className="gf-card">
+        <header className="gf-section-header">
+          <div>
+            <h3>Top gastos por categoria</h3>
+            <p>Carregando distribuicao por categoria.</p>
+          </div>
+        </header>
+        <div className="gf-empty">
+          <p>Preparando grafico de barras.</p>
+        </div>
+      </article>
+      <article className="gf-card">
+        <header className="gf-section-header">
+          <div>
+            <h3>Distribuicao de despesas</h3>
+            <p>Carregando participacao percentual.</p>
+          </div>
+        </header>
+        <div className="gf-empty">
+          <p>Preparando grafico de distribuicao.</p>
+        </div>
+      </article>
+    </section>
+  )
+
+  const emptyStatePrimaryAction = firstUseJourneyCard?.primaryAction ?? {
+    label: 'Abrir setup inicial',
+    onClick: () => onOpenFirstUseSetup?.(),
+  }
+
+  const emptyStateSecondaryAction =
+    firstUseJourneyCard?.secondaryAction ??
+    (onOpenImportSettings
+      ? {
+          label: 'Configurar importação',
+          onClick: () => onOpenImportSettings(),
+          tone: 'ghost' as const,
+        }
+      : undefined)
+
   return (
-    <div className="gf-stack">
-      <section className="gf-card">
+    <div
+      className="gf-stack"
+      ref={(node) => {
+        if (node) markSegment('initial_tab')
+      }}
+    >
+      {!hasImportedFinancialData && (
+        <section className="gf-card">
+          <header className="gf-section-header">
+            <div>
+              <h3>Comece por aqui</h3>
+              <p>O dashboard fica realmente util depois da primeira importação concluída.</p>
+            </div>
+          </header>
+          <GuidedEmptyState
+            title="Nenhum dado financeiro importado ainda."
+            description="Abra o setup inicial para configurar a pasta base, validar a senha BTG e rodar a primeira importação."
+            primaryAction={emptyStatePrimaryAction}
+            secondaryAction={emptyStateSecondaryAction}
+          />
+        </section>
+      )}
+
+      {firstUseJourneyCard && <FirstUseJourneyCard {...firstUseJourneyCard} />}
+
+      <section
+        className="gf-card"
+        ref={(node) => {
+          if (node) markSegment('initial_cards')
+        }}
+      >
         <header className="gf-section-header">
           <div>
             <h3>Indicadores principais</h3>
@@ -220,8 +342,16 @@ export function DashboardTab({
             <small>
               Contas com ajuste:{' '}
               <span className={`gf-pill gf-pill-${reconciliationStatus}`}>{reconciliationStatus === 'ok' ? 'Conferido' : 'Atencao'}</span>
+              <span
+                className="gf-hint"
+                tabIndex={0}
+                role="note"
+                aria-label="Detalhes do periodo da reconciliacao"
+                data-hint={buildReconciliationPeriodHint(reconciliation)}
+              >
+                i
+              </span>
             </small>
-            <small>Periodo: {reconciliation?.periodStart ?? '-'} ate {reconciliation?.periodEnd ?? '-'}</small>
           </article>
           <article className="gf-metric-card">
             <p>Pendencias</p>
@@ -249,16 +379,16 @@ export function DashboardTab({
                 <strong>{brl(account.estimatedCents)}</strong>
                 <small>
                   Status: <span className={`gf-pill gf-pill-${account.status}`}>{RECON_STATUS_LABEL[account.status]}</span>
+                  <span
+                    className="gf-hint"
+                    tabIndex={0}
+                    role="note"
+                    aria-label={`Detalhes da reconciliacao de ${account.label.toLowerCase()}`}
+                    data-hint={buildAccountDetailsHint(account)}
+                  >
+                    i
+                  </span>
                 </small>
-                <small>
-                  Snapshot:{' '}
-                  {account.snapshotAt ? `${shortDate(account.snapshotAt)} · ${brl(account.snapshotCents ?? 0)}` : 'nao informado'}
-                </small>
-                <small>
-                  Divergencia:{' '}
-                  {account.divergenceCents === null ? 'nao calculada' : brl(account.divergenceCents)}
-                </small>
-                <small>Movimento no periodo: {brl(account.periodNetCents)}</small>
                 <small>Pendentes de revisao: {account.pendingReviewCount}</small>
                 <button
                   type="button"
@@ -325,43 +455,28 @@ export function DashboardTab({
           </form>
         </article>
 
-        <article className="gf-card">
-          <header className="gf-section-header">
-            <div>
-              <h3>Tendência mensal</h3>
-              <p>Receitas, despesas e saldo no período.</p>
-            </div>
-          </header>
-
-          {!chartsEnabled || !hasSafeLineData ? (
-            <div className="gf-empty">
-              <p>Sem dados suficientes para o gráfico de tendência.</p>
-            </div>
-          ) : (
-            <ChartErrorBoundary
-              resetKey={lineResetKey}
-              fallback={
-                <div className="gf-empty">
-                  <p>Gráfico temporariamente indisponível. Altere o período para recarregar.</p>
-                </div>
-              }
-            >
-              <div className="gf-chart">
-                <ResponsiveContainer width="100%" height={220}>
-                  <LineChart data={lineData}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#d6e0ef" />
-                    <XAxis dataKey="month" />
-                    <YAxis />
-                    <Tooltip formatter={(value) => brl(Math.round(Number(value ?? 0) * 100))} />
-                    <Line type="monotone" dataKey="receitas" stroke="#0f766e" strokeWidth={2} dot={false} isAnimationActive={false} />
-                    <Line type="monotone" dataKey="despesas" stroke="#ef4444" strokeWidth={2} dot={false} isAnimationActive={false} />
-                    <Line type="monotone" dataKey="saldo" stroke="#1d4ed8" strokeWidth={2} dot={false} isAnimationActive={false} />
-                  </LineChart>
-                </ResponsiveContainer>
+        {!chartsEnabled || !hasSafeLineData ? (
+          <article className="gf-card">
+            <header className="gf-section-header">
+              <div>
+                <h3>Tendencia mensal</h3>
+                <p>Receitas, despesas e saldo no periodo.</p>
               </div>
-            </ChartErrorBoundary>
-          )}
-        </article>
+            </header>
+            <div className="gf-empty">
+              <p>Sem dados suficientes para o grafico de tendencia.</p>
+            </div>
+          </article>
+        ) : (
+          <Suspense fallback={trendChartFallback}>
+            <LazyDashboardTrendChartCard
+              chartsEnabled={chartsEnabled}
+              hasSafeLineData={hasSafeLineData}
+              lineData={lineData}
+              lineResetKey={lineResetKey}
+            />
+          </Suspense>
+        )}
       </section>
 
       <section className="gf-grid gf-grid-2">
@@ -386,16 +501,16 @@ export function DashboardTab({
         </article>
       </section>
 
-      {effectiveShowExtended && (
-        <section className="gf-grid gf-grid-2">
-          <article className="gf-card">
-            <header className="gf-section-header">
-              <div>
-                <h3>Top gastos por categoria</h3>
-                <p>Categorias com maior impacto no período.</p>
-              </div>
-            </header>
-            {!chartsEnabled || !hasSafeBarData ? (
+      {effectiveShowExtended &&
+        (!chartsEnabled || (!hasSafeBarData && !hasSafePieData) ? (
+          <section className="gf-grid gf-grid-2">
+            <article className="gf-card">
+              <header className="gf-section-header">
+                <div>
+                  <h3>Top gastos por categoria</h3>
+                  <p>Categorias com maior impacto no periodo.</p>
+                </div>
+              </header>
               <ul className="gf-list">
                 {topCategories.map((item) => (
                   <li key={item.categoryId}>
@@ -405,67 +520,35 @@ export function DashboardTab({
                 ))}
                 {topCategories.length === 0 && <li className="gf-empty-inline">Sem dados de despesas.</li>}
               </ul>
-            ) : (
-              <ChartErrorBoundary
-                resetKey={barResetKey}
-                fallback={
-                  <div className="gf-empty">
-                    <p>Gráfico de barras indisponível para este conjunto de dados.</p>
-                  </div>
-                }
-              >
-                <div className="gf-chart">
-                  <ResponsiveContainer width="100%" height={220}>
-                    <BarChart data={barData} layout="vertical" margin={{ left: 18 }}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#d6e0ef" />
-                      <XAxis type="number" />
-                      <YAxis type="category" dataKey="categoria" width={140} />
-                      <Tooltip formatter={(value) => brl(Math.round(Number(value ?? 0) * 100))} />
-                      <Bar dataKey="valor" fill="#1d4ed8" radius={[0, 6, 6, 0]} isAnimationActive={false} />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              </ChartErrorBoundary>
-            )}
-          </article>
+            </article>
 
-          <article className="gf-card">
-            <header className="gf-section-header">
-              <div>
-                <h3>Distribuição de despesas</h3>
-                <p>Participação percentual por categoria.</p>
-              </div>
-            </header>
-            {!chartsEnabled || !hasSafePieData ? (
-              <div className="gf-empty">
-                <p>Sem distribuição disponível no período.</p>
-              </div>
-            ) : (
-              <ChartErrorBoundary
-                resetKey={pieResetKey}
-                fallback={
-                  <div className="gf-empty">
-                    <p>Gráfico de distribuição indisponível para este período.</p>
-                  </div>
-                }
-              >
-                <div className="gf-chart">
-                  <ResponsiveContainer width="100%" height={220}>
-                    <PieChart>
-                      <Pie data={pieData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={82} isAnimationActive={false}>
-                        {pieData.map((entry, index) => (
-                          <Cell key={`slice-${entry.name}`} fill={CHART_COLORS[index % CHART_COLORS.length]} />
-                        ))}
-                      </Pie>
-                      <Tooltip formatter={(value) => brl(Math.round(Number(value ?? 0) * 100))} />
-                    </PieChart>
-                  </ResponsiveContainer>
+            <article className="gf-card">
+              <header className="gf-section-header">
+                <div>
+                  <h3>Distribuicao de despesas</h3>
+                  <p>Participacao percentual por categoria.</p>
                 </div>
-              </ChartErrorBoundary>
-            )}
-          </article>
-        </section>
-      )}
+              </header>
+              <div className="gf-empty">
+                <p>Sem distribuicao disponivel no periodo.</p>
+              </div>
+            </article>
+          </section>
+        ) : (
+          <Suspense fallback={categoryChartsFallback}>
+            <LazyDashboardCategoryChartsSection
+              chartsEnabled={chartsEnabled}
+              hasSafeBarData={hasSafeBarData}
+              hasSafePieData={hasSafePieData}
+              barData={barData}
+              pieData={pieData}
+              topCategories={topCategories}
+              barResetKey={barResetKey}
+              pieResetKey={pieResetKey}
+            />
+          </Suspense>
+        ))}
+
     </div>
   )
 }

@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState } from 'react'
 import type { KeyboardEvent } from 'react'
 
+import { GuidedEmptyState } from '../common/GuidedEmptyState'
 import { brl, shortDate } from '../../lib/format'
 import type {
   SubcategoryItem,
@@ -46,10 +47,13 @@ interface TransactionsTabProps {
   onRowsPerPageChange: (rowsPerPage: number) => void
   transactions: TransactionsListResponse
   reviewQueue: TransactionsReviewQueueResponse
+  hasImportedFinancialData: boolean
   categoryOptions: CategoryOption[]
   subcategoriesByCategory: Record<string, SubcategoryItem[]>
   flowLabel: (flowType: string) => string
   onUpdateCategory: (tx: TransactionItem, categoryId: string, subcategoryId: string) => void
+  onOpenFirstUseSetup?: () => void
+  onOpenImportSettings?: () => void
   mode: 'simple' | 'advanced'
 }
 
@@ -70,10 +74,13 @@ export function TransactionsTab({
   onRowsPerPageChange,
   transactions,
   reviewQueue,
+  hasImportedFinancialData,
   categoryOptions,
   subcategoriesByCategory,
   flowLabel,
   onUpdateCategory,
+  onOpenFirstUseSetup,
+  onOpenImportSettings,
   mode,
 }: TransactionsTabProps) {
   const [selectedTransactionId, setSelectedTransactionId] = useState<number | null>(null)
@@ -289,7 +296,31 @@ export function TransactionsTab({
         </div>
       </section>
 
-      {showReviewSection && (
+      {!hasImportedFinancialData && (
+        <section className="gf-card">
+          <header className="gf-section-header">
+            <div>
+              <h3>Transações ainda vazias</h3>
+              <p>Esta aba passa a fazer sentido depois da primeira importação.</p>
+            </div>
+          </header>
+          <GuidedEmptyState
+            title="Nenhuma transação disponível ainda."
+            description="Conclua o setup inicial ou configure a importação para trazer seus lançamentos e começar a revisão de categorias."
+            primaryAction={{
+              label: 'Abrir setup inicial',
+              onClick: () => onOpenFirstUseSetup?.(),
+            }}
+            secondaryAction={{
+              label: 'Configurar importação',
+              onClick: () => onOpenImportSettings?.(),
+              tone: 'ghost',
+            }}
+          />
+        </section>
+      )}
+
+      {hasImportedFinancialData && showReviewSection && (
         <section className="gf-card" id={reviewPanelId}>
           <header className="gf-section-header">
             <div>
@@ -366,7 +397,7 @@ export function TransactionsTab({
         </section>
       )}
 
-      {showTableSection && (
+      {hasImportedFinancialData && showTableSection && (
         <section className="gf-card" id={tablePanelId}>
           <header className="gf-section-header">
             <div>

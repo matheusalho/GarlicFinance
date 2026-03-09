@@ -17,11 +17,86 @@ export interface ImportScanResponse {
   candidates: ImportCandidate[]
 }
 
+export type ImportRunStatus = 'running' | 'success' | 'partial' | 'error' | 'noop'
+
+export interface ImportRunScope {
+  mode: string
+  includePaths: string[]
+  sourceTypes: string[]
+}
+
+export interface ImportRunFileItem {
+  importRunId: number
+  path: string
+  name: string
+  fileHash: string
+  sourceType: string
+  status: string
+  transactionCount: number
+  insertedCount: number
+  dedupedCount: number
+  errorMessage: string
+  observedAt: string
+}
+
 export interface ImportRunResponse {
+  runId: number
+  status: ImportRunStatus
   filesProcessed: number
   inserted: number
   deduped: number
   warnings: string[]
+  files: ImportRunFileItem[]
+}
+
+export interface ImportJobStatusResponse {
+  jobId: string
+  runId: number
+  status: ImportRunStatus | 'queued'
+  phase: string
+  progressPercent: number
+  current: number
+  total: number
+  message: string
+  startedAt: string
+  finishedAt: string
+  warnings: string[]
+  errorMessage: string
+  result: ImportRunResponse | null
+}
+
+export interface ImportRunSummaryItem {
+  id: number
+  basePath: string
+  startedAt: string
+  finishedAt: string
+  status: ImportRunStatus
+  reprocess: boolean
+  failedOnly: boolean
+  requestedScope: ImportRunScope
+  filesDiscovered: number
+  filesProcessed: number
+  insertedCount: number
+  dedupedCount: number
+  warningCount: number
+  warnings: string[]
+  errorMessage: string
+}
+
+export interface ImportSourceSummaryItem {
+  sourceType: string
+  fileCount: number
+  parsedCount: number
+  errorCount: number
+  insertedCount: number
+  dedupedCount: number
+  lastObservedAt: string
+}
+
+export interface ImportHistoryResponse {
+  runs: ImportRunSummaryItem[]
+  latestFiles: ImportRunFileItem[]
+  sourceSummary: ImportSourceSummaryItem[]
 }
 
 export interface TransactionItem {
@@ -274,4 +349,6 @@ export interface FeatureFlagsV1 {
   newPlanningEnabled: boolean
   newSettingsEnabled: boolean
   onboardingEnabled: boolean
+  idleTabPrefetchEnabled: boolean
+  v2AsyncJobsEnabled: boolean
 }

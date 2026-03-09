@@ -63,13 +63,101 @@ pub struct ImportScanResponse {
     pub candidates: Vec<ImportCandidate>,
 }
 
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportRunScope {
+    #[serde(default)]
+    pub mode: String,
+    #[serde(default)]
+    pub include_paths: Vec<String>,
+    #[serde(default)]
+    pub source_types: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportRunFileItem {
+    pub import_run_id: i64,
+    pub path: String,
+    pub name: String,
+    pub file_hash: String,
+    pub source_type: String,
+    pub status: String,
+    pub transaction_count: i64,
+    pub inserted_count: i64,
+    pub deduped_count: i64,
+    pub error_message: String,
+    pub observed_at: String,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportRunResponse {
+    pub run_id: i64,
+    pub status: String,
     pub files_processed: usize,
     pub inserted: usize,
     pub deduped: usize,
     pub warnings: Vec<String>,
+    pub files: Vec<ImportRunFileItem>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportJobStatusResponse {
+    pub job_id: String,
+    pub run_id: i64,
+    pub status: String,
+    pub phase: String,
+    pub progress_percent: f64,
+    pub current: i64,
+    pub total: i64,
+    pub message: String,
+    pub started_at: String,
+    pub finished_at: String,
+    pub warnings: Vec<String>,
+    pub error_message: String,
+    pub result: Option<ImportRunResponse>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportRunSummaryItem {
+    pub id: i64,
+    pub base_path: String,
+    pub started_at: String,
+    pub finished_at: String,
+    pub status: String,
+    pub reprocess: bool,
+    pub failed_only: bool,
+    pub requested_scope: ImportRunScope,
+    pub files_discovered: i64,
+    pub files_processed: i64,
+    pub inserted_count: i64,
+    pub deduped_count: i64,
+    pub warning_count: i64,
+    pub warnings: Vec<String>,
+    pub error_message: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportSourceSummaryItem {
+    pub source_type: String,
+    pub file_count: i64,
+    pub parsed_count: i64,
+    pub error_count: i64,
+    pub inserted_count: i64,
+    pub deduped_count: i64,
+    pub last_observed_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportHistoryResponse {
+    pub runs: Vec<ImportRunSummaryItem>,
+    pub latest_files: Vec<ImportRunFileItem>,
+    pub source_summary: Vec<ImportSourceSummaryItem>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -530,6 +618,8 @@ pub struct FeatureFlagsV1 {
     pub new_planning_enabled: bool,
     pub new_settings_enabled: bool,
     pub onboarding_enabled: bool,
+    pub idle_tab_prefetch_enabled: bool,
+    pub v2_async_jobs_enabled: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -543,6 +633,12 @@ pub struct SettingsAutoImportResponse {
 pub struct SettingsPasswordTestResponse {
     pub ok: bool,
     pub message: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingsPasswordStatusResponse {
+    pub exists: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

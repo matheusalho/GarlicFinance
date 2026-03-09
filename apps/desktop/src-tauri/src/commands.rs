@@ -5,35 +5,45 @@ use rusqlite::{params, Connection};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc, Mutex,
+};
 use tauri::State;
 
 use crate::db;
 use crate::models::{
-    BudgetUpsertInput, BudgetUpsertResponse, CategoryBreakdown, CategoryTreeItem, CategoryUpsertInput,
-    CategoryUpsertResponse, DashboardInput, DashboardKpis, DashboardSeriesPoint,
-    DashboardSummaryResponse, GoalAllocationInput, GoalAllocationItem, GoalAllocationUpsertResponse,
-    GoalInput, GoalListItem, GoalProjectionProgress, GoalUpsertResponse, ImportRunResponse,
-    ImportScanResponse, ImporterParseOutput, ImporterScanOutput, ManualBalanceSnapshotInput,
+    BudgetUpsertInput, BudgetUpsertResponse, CategoryBreakdown, CategoryTreeItem,
+    CategoryUpsertInput, CategoryUpsertResponse, DashboardInput, DashboardKpis,
+    DashboardSeriesPoint, DashboardSummaryResponse, GoalAllocationInput, GoalAllocationItem,
+    GoalAllocationUpsertResponse, GoalInput, GoalListItem, GoalProjectionProgress,
+    GoalUpsertResponse, ImportHistoryResponse, ImportJobStatusResponse, ImportRunFileItem,
+    ImportRunResponse, ImportRunScope, ImportScanResponse, ImportSourceSummaryItem,
+    ImporterParseOutput, ImporterScanOutput, ManualBalanceSnapshotInput,
     ManualBalanceSnapshotResponse, ManualTransactionInput, ManualTransactionResponse,
     MonthlyBudgetSummaryResponse, ObservabilityEventItem, ObservabilityLogEventInput,
-    ProjectionInput, ProjectionMonth, ProjectionResponse, ReconciliationAccountItem,
-    ReconciliationInput, ReconciliationSummaryResponse,
+    ParsedSourceFile, ProjectionInput, ProjectionMonth, ProjectionResponse,
+    ReconciliationAccountItem, ReconciliationInput, ReconciliationSummaryResponse,
     RecurringTemplateInput, RecurringTemplateItem, RecurringTemplateResponse, RuleDryRunItem,
     RuleListItem, RuleUpsertInput, RuleUpsertResponse, RulesDryRunResponse,
     SettingsAutoImportResponse, SettingsAutoImportSetInput, SettingsFeatureFlagsResponse,
     SettingsFeatureFlagsSetInput, SettingsOnboardingResponse, SettingsOnboardingSetInput,
-    SettingsPasswordSetInput, SettingsPasswordTestInput, SettingsPasswordTestResponse,
-    SettingsSimpleResponse, SettingsUiPreferencesResponse, SettingsUiPreferencesSetInput,
-    SubcategoryUpsertInput, SubcategoryUpsertResponse, TransactionsFilters,
-    TransactionsListResponse, TransactionsReviewQueueResponse, UpdateCategoryInput,
-    UpdatedCountResponse,
+    SettingsPasswordSetInput, SettingsPasswordStatusResponse, SettingsPasswordTestInput,
+    SettingsPasswordTestResponse, SettingsSimpleResponse, SettingsUiPreferencesResponse,
+    SettingsUiPreferencesSetInput, SubcategoryUpsertInput, SubcategoryUpsertResponse,
+    TransactionsFilters, TransactionsListResponse, TransactionsReviewQueueResponse,
+    UpdateCategoryInput, UpdatedCountResponse,
 };
 
 const SUPPORTED_SCENARIOS: [&str; 3] = ["base", "optimistic", "pessimistic"];
 
+#[derive(Clone)]
 pub struct AppState {
     pub importer_script: PathBuf,
     pub importer_sidecar: Option<PathBuf>,
+    next_import_job_seq: Arc<AtomicU64>,
+    import_jobs: Arc<Mutex<HashMap<String, ImportJobStatusResponse>>>,
+    active_import_job_id: Arc<Mutex<Option<String>>>,
 }
 
 impl AppState {
@@ -41,6 +51,765 @@ impl AppState {
         Self {
             importer_script: db::importer_script_path(),
             importer_sidecar: db::importer_sidecar_path(),
+            next_import_job_seq: Arc::new(AtomicU64::new(1)),
+            import_jobs: Arc::new(Mutex::new(HashMap::new())),
+            active_import_job_id: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    fn next_import_job_id(&self) -> String {
+        let next = self.next_import_job_seq.fetch_add(1, Ordering::Relaxed);
+        format!("import-job-{next}")
+    }
+
+    fn upsert_import_job(&self, snapshot: ImportJobStatusResponse) {
+        if let Ok(mut jobs) = self.import_jobs.lock() {
+            jobs.insert(snapshot.job_id.clone(), snapshot.clone());
+        }
+        if let Ok(mut active_job_id) = self.active_import_job_id.lock() {
+            if is_import_job_active(&snapshot.status) {
+                *active_job_id = Some(snapshot.job_id.clone());
+            } else if active_job_id
+                .as_ref()
+                .map(|current| current == &snapshot.job_id)
+                .unwrap_or(false)
+            {
+                *active_job_id = None;
+            }
+        }
+    }
+
+    fn update_import_job<F>(&self, job_id: &str, updater: F)
+    where
+        F: FnOnce(&mut ImportJobStatusResponse),
+    {
+        let snapshot = if let Ok(mut jobs) = self.import_jobs.lock() {
+            if let Some(job) = jobs.get_mut(job_id) {
+                updater(job);
+                Some(job.clone())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        if let Some(snapshot) = snapshot {
+            if let Ok(mut active_job_id) = self.active_import_job_id.lock() {
+                if is_import_job_active(&snapshot.status) {
+                    *active_job_id = Some(snapshot.job_id.clone());
+                } else if active_job_id
+                    .as_ref()
+                    .map(|current| current == &snapshot.job_id)
+                    .unwrap_or(false)
+                {
+                    *active_job_id = None;
+                }
+            }
+        }
+    }
+
+    fn get_import_job(&self, job_id: &str) -> Option<ImportJobStatusResponse> {
+        self.import_jobs
+            .lock()
+            .ok()
+            .and_then(|jobs| jobs.get(job_id).cloned())
+    }
+
+    fn has_active_import_job(&self) -> bool {
+        self.active_import_job_id
+            .lock()
+            .ok()
+            .and_then(|active| active.clone())
+            .and_then(|job_id| self.get_import_job(&job_id))
+            .map(|snapshot| is_import_job_active(&snapshot.status))
+            .unwrap_or(false)
+    }
+}
+
+fn is_import_job_active(status: &str) -> bool {
+    matches!(status, "queued" | "running")
+}
+
+struct ImportProgressUpdate<'a> {
+    status: &'a str,
+    phase: &'a str,
+    progress_percent: f64,
+    current: i64,
+    total: i64,
+    message: String,
+    warnings: Option<Vec<String>>,
+    error_message: Option<String>,
+    result: Option<ImportRunResponse>,
+}
+
+#[derive(Clone)]
+struct ImportJobReporter {
+    state: AppState,
+    job_id: String,
+}
+
+impl ImportJobReporter {
+    fn new(state: AppState, job_id: String) -> Self {
+        Self { state, job_id }
+    }
+
+    fn update(&self, update: ImportProgressUpdate<'_>) {
+        self.state.update_import_job(&self.job_id, |job| {
+            job.status = update.status.to_string();
+            job.phase = update.phase.to_string();
+            job.progress_percent = (update.progress_percent * 100.0).round() / 100.0;
+            job.current = update.current;
+            job.total = update.total;
+            job.message = update.message;
+            if let Some(warnings) = update.warnings {
+                job.warnings = warnings;
+            }
+            if let Some(error_message) = update.error_message {
+                job.error_message = error_message;
+            }
+            if let Some(result) = update.result {
+                job.result = Some(result);
+            }
+            if !is_import_job_active(&job.status) {
+                job.finished_at = Utc::now().to_rfc3339();
+            }
+        });
+    }
+
+    fn running(
+        &self,
+        phase: &str,
+        progress_percent: f64,
+        current: i64,
+        total: i64,
+        message: impl Into<String>,
+    ) {
+        self.update(ImportProgressUpdate {
+            status: "running",
+            phase,
+            progress_percent,
+            current,
+            total,
+            message: message.into(),
+            warnings: None,
+            error_message: None,
+            result: None,
+        });
+    }
+
+    fn finalize(&self, snapshot: ImportRunResponse, message: impl Into<String>) {
+        let status = snapshot.status.clone();
+        let warnings = snapshot.warnings.clone();
+        let files_processed = snapshot.files_processed as i64;
+        self.update(ImportProgressUpdate {
+            status: &status,
+            phase: "completed",
+            progress_percent: 100.0,
+            current: files_processed,
+            total: files_processed,
+            message: message.into(),
+            warnings: Some(warnings),
+            error_message: None,
+            result: Some(snapshot),
+        });
+    }
+
+    fn fail(&self, message: impl Into<String>, warnings: Vec<String>) {
+        let final_message = message.into();
+        self.update(ImportProgressUpdate {
+            status: "error",
+            phase: "failed",
+            progress_percent: 100.0,
+            current: 0,
+            total: 0,
+            message: final_message.clone(),
+            warnings: Some(warnings),
+            error_message: Some(final_message),
+            result: None,
+        });
+    }
+}
+
+#[derive(Default)]
+struct ImportFileCounters {
+    inserted_count: i64,
+    deduped_count: i64,
+}
+
+fn build_import_run_file_items(
+    run_id: i64,
+    source_files: &[ParsedSourceFile],
+    counters_by_hash: &HashMap<String, ImportFileCounters>,
+) -> Vec<ImportRunFileItem> {
+    let observed_at = Utc::now().to_rfc3339();
+    source_files
+        .iter()
+        .map(|source| {
+            let counters = counters_by_hash.get(&source.hash);
+            ImportRunFileItem {
+                import_run_id: run_id,
+                path: source.path.clone(),
+                name: source.name.clone(),
+                file_hash: source.hash.clone(),
+                source_type: source.source_type.clone(),
+                status: source.status.clone(),
+                transaction_count: source.transaction_count,
+                inserted_count: counters.map(|item| item.inserted_count).unwrap_or(0),
+                deduped_count: counters.map(|item| item.deduped_count).unwrap_or(0),
+                error_message: source.error.clone(),
+                observed_at: observed_at.clone(),
+            }
+        })
+        .collect()
+}
+
+fn derive_import_run_status(source_files: &[ParsedSourceFile]) -> &'static str {
+    if source_files.is_empty() {
+        return "noop";
+    }
+
+    let parsed_count = source_files
+        .iter()
+        .filter(|item| item.status == "parsed")
+        .count();
+    let error_count = source_files
+        .iter()
+        .filter(|item| item.status == "error")
+        .count();
+
+    if error_count > 0 && parsed_count > 0 {
+        "partial"
+    } else if error_count > 0 {
+        "error"
+    } else {
+        "success"
+    }
+}
+
+fn summarize_import_sources(latest_files: &[ImportRunFileItem]) -> Vec<ImportSourceSummaryItem> {
+    let mut summary_by_source: HashMap<String, ImportSourceSummaryItem> = HashMap::new();
+
+    for item in latest_files {
+        let summary = summary_by_source
+            .entry(item.source_type.clone())
+            .or_insert_with(|| ImportSourceSummaryItem {
+                source_type: item.source_type.clone(),
+                file_count: 0,
+                parsed_count: 0,
+                error_count: 0,
+                inserted_count: 0,
+                deduped_count: 0,
+                last_observed_at: item.observed_at.clone(),
+            });
+
+        summary.file_count += 1;
+        if item.status == "parsed" {
+            summary.parsed_count += 1;
+        }
+        if item.status == "error" {
+            summary.error_count += 1;
+        }
+        summary.inserted_count += item.inserted_count;
+        summary.deduped_count += item.deduped_count;
+        if item.observed_at > summary.last_observed_at {
+            summary.last_observed_at = item.observed_at.clone();
+        }
+    }
+
+    let mut output = summary_by_source.into_values().collect::<Vec<_>>();
+    output.sort_by(|left, right| left.source_type.cmp(&right.source_type));
+    output
+}
+
+fn normalize_string_list(values: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut normalized = Vec::new();
+    for value in values {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if seen.insert(trimmed.to_string()) {
+            normalized.push(trimmed.to_string());
+        }
+    }
+    normalized
+}
+
+fn intersect_paths_preserve_left(values: Vec<String>, allowed: &HashSet<String>) -> Vec<String> {
+    values
+        .into_iter()
+        .filter(|value| allowed.contains(value))
+        .collect()
+}
+
+fn derive_import_scope_mode(
+    reprocess: bool,
+    failed_only: bool,
+    source_types: &[String],
+    include_paths: &[String],
+) -> String {
+    if !source_types.is_empty() {
+        if failed_only {
+            "source_failed_only".to_string()
+        } else if reprocess {
+            "source_reprocess".to_string()
+        } else {
+            "source_selection".to_string()
+        }
+    } else if !include_paths.is_empty() {
+        if failed_only {
+            "path_failed_only".to_string()
+        } else if reprocess {
+            "path_reprocess".to_string()
+        } else {
+            "path_selection".to_string()
+        }
+    } else if failed_only {
+        "failed_only".to_string()
+    } else if reprocess {
+        "reprocess_all".to_string()
+    } else {
+        "all".to_string()
+    }
+}
+
+fn build_empty_import_scope_warning(scope: &ImportRunScope, failed_only: bool) -> String {
+    if !scope.source_types.is_empty() && failed_only {
+        "Nenhum arquivo com falha anterior foi encontrado nas fontes selecionadas.".to_string()
+    } else if !scope.source_types.is_empty() {
+        "Nenhum arquivo das fontes selecionadas foi encontrado na pasta base.".to_string()
+    } else if !scope.include_paths.is_empty() && failed_only {
+        "Nenhum arquivo com falha anterior permaneceu no escopo selecionado.".to_string()
+    } else if !scope.include_paths.is_empty() {
+        "Nenhum arquivo permaneceu no escopo selecionado para reprocessamento.".to_string()
+    } else {
+        "Nenhum arquivo com falha anterior foi encontrado para reprocessar.".to_string()
+    }
+}
+
+fn import_scope_requires_materialized_paths(mode: &str) -> bool {
+    matches!(
+        mode,
+        "failed_only"
+            | "source_failed_only"
+            | "source_reprocess"
+            | "source_selection"
+            | "path_failed_only"
+            | "path_reprocess"
+            | "path_selection"
+    )
+}
+
+fn resolve_import_run_scope(
+    state: &AppState,
+    conn: &Connection,
+    base_path: &str,
+    reprocess: bool,
+    failed_only: bool,
+    scope: Option<ImportRunScope>,
+) -> Result<ImportRunScope, String> {
+    let mut requested_scope = scope.unwrap_or_default();
+    requested_scope.include_paths = normalize_string_list(requested_scope.include_paths);
+    requested_scope.source_types = normalize_string_list(requested_scope.source_types);
+
+    let had_explicit_paths = !requested_scope.include_paths.is_empty();
+    let had_source_types = !requested_scope.source_types.is_empty();
+    let mut resolved_paths = requested_scope.include_paths.clone();
+
+    if had_source_types {
+        let scan_output = run_importer_scan(state, base_path).map_err(|err| err.to_string())?;
+        let selected_sources = requested_scope
+            .source_types
+            .iter()
+            .cloned()
+            .collect::<HashSet<_>>();
+        let source_paths = scan_output
+            .candidates
+            .into_iter()
+            .filter(|candidate| selected_sources.contains(&candidate.source_type))
+            .map(|candidate| candidate.path)
+            .collect::<Vec<_>>();
+        let source_path_set = source_paths.iter().cloned().collect::<HashSet<_>>();
+        resolved_paths = if had_explicit_paths {
+            intersect_paths_preserve_left(resolved_paths, &source_path_set)
+        } else {
+            source_paths
+        };
+    }
+
+    if failed_only {
+        let failed_paths = db::list_latest_failed_source_file_paths(conn, base_path)
+            .map_err(|err| err.to_string())?;
+        let failed_path_set = failed_paths.iter().cloned().collect::<HashSet<_>>();
+        resolved_paths = if resolved_paths.is_empty() && !had_explicit_paths && !had_source_types {
+            failed_paths
+        } else {
+            intersect_paths_preserve_left(resolved_paths, &failed_path_set)
+        };
+    }
+
+    requested_scope.include_paths = normalize_string_list(resolved_paths);
+    requested_scope.mode = derive_import_scope_mode(
+        reprocess,
+        failed_only,
+        &requested_scope.source_types,
+        &requested_scope.include_paths,
+    );
+
+    Ok(requested_scope)
+}
+
+fn create_import_run_record(
+    base_path: &str,
+    reprocess: bool,
+    failed_only: bool,
+    requested_scope: &ImportRunScope,
+) -> Result<i64, String> {
+    let conn = db::open_connection().map_err(|err| err.to_string())?;
+    db::init_database(&conn).map_err(|err| err.to_string())?;
+    db::create_import_run(&conn, base_path, reprocess, failed_only, requested_scope)
+        .map_err(|err| err.to_string())
+}
+
+fn summarize_completed_import(result: &ImportRunResponse) -> String {
+    match result.status.as_str() {
+        "success" | "partial" | "noop" => format!(
+            "Importação concluída: {} arquivo(s), {} novas, {} deduplicadas.",
+            result.files_processed, result.inserted, result.deduped
+        ),
+        _ => "Importação finalizada.".to_string(),
+    }
+}
+
+fn run_import_pipeline(
+    state: &AppState,
+    run_id: i64,
+    base_path: String,
+    reprocess: bool,
+    failed_only: bool,
+    initial_scope: ImportRunScope,
+    reporter: Option<&ImportJobReporter>,
+) -> Result<ImportRunResponse, String> {
+    let mut conn = db::open_connection().map_err(|err| err.to_string())?;
+    db::init_database(&conn).map_err(|err| err.to_string())?;
+
+    reporter.map(|job| {
+        job.running(
+            "preparing_scope",
+            4.0,
+            0,
+            0,
+            "Preparando escopo da importação...",
+        )
+    });
+
+    let requested_scope = resolve_import_run_scope(
+        state,
+        &conn,
+        &base_path,
+        reprocess,
+        failed_only,
+        Some(initial_scope),
+    )
+    .map_err(|message| {
+        let _ = db::complete_import_run(&conn, run_id, "error", 0, 0, 0, 0, &[], &message);
+        if let Some(job) = reporter {
+            job.fail(message.clone(), Vec::new());
+        }
+        message
+    })?;
+    db::update_import_run_scope(&conn, run_id, &requested_scope).map_err(|err| {
+        let message = err.to_string();
+        let _ = db::complete_import_run(&conn, run_id, "error", 0, 0, 0, 0, &[], &message);
+        if let Some(job) = reporter {
+            job.fail(message.clone(), Vec::new());
+        }
+        message
+    })?;
+
+    if import_scope_requires_materialized_paths(&requested_scope.mode)
+        && requested_scope.include_paths.is_empty()
+    {
+        let warnings = vec![build_empty_import_scope_warning(
+            &requested_scope,
+            failed_only,
+        )];
+        db::complete_import_run(&conn, run_id, "noop", 0, 0, 0, 0, &warnings, "")
+            .map_err(|err| err.to_string())?;
+        let response = ImportRunResponse {
+            run_id,
+            status: "noop".to_string(),
+            files_processed: 0,
+            inserted: 0,
+            deduped: 0,
+            warnings: warnings.clone(),
+            files: Vec::new(),
+        };
+        if let Some(job) = reporter {
+            job.finalize(
+                response.clone(),
+                "Nenhum arquivo permaneceu no escopo selecionado.",
+            );
+        }
+        return Ok(response);
+    }
+
+    reporter.map(|job| {
+        job.running(
+            "validating_credentials",
+            10.0,
+            0,
+            0,
+            "Validando credenciais necessárias...",
+        )
+    });
+
+    let btg_password = read_provider_password("btg")
+        .map_err(|err| {
+            let message = err.to_string();
+            let _ = db::complete_import_run(&conn, run_id, "error", 0, 0, 0, 0, &[], &message);
+            if let Some(job) = reporter {
+                job.fail(message.clone(), Vec::new());
+            }
+            message
+        })?
+        .unwrap_or_default();
+
+    reporter.map(|job| {
+        job.running(
+            "parsing_sources",
+            22.0,
+            0,
+            0,
+            "Lendo e normalizando arquivos financeiros...",
+        )
+    });
+
+    let parsed = run_importer_parse(
+        state,
+        &base_path,
+        &btg_password,
+        &requested_scope.include_paths,
+    )
+    .map_err(|err| {
+        let message = err.to_string();
+        let _ = db::complete_import_run(&conn, run_id, "error", 0, 0, 0, 0, &[], &message);
+        if let Some(job) = reporter {
+            job.fail(message.clone(), Vec::new());
+        }
+        message
+    })?;
+    let files_discovered = parsed.source_files.len() as i64;
+    reporter.map(|job| {
+        job.running(
+            "backup",
+            42.0,
+            files_discovered,
+            files_discovered,
+            format!(
+                "Backup local criado antes de persistir {} arquivo(s).",
+                files_discovered
+            ),
+        )
+    });
+
+    db::backup_database().map_err(|err| {
+        let message = err.to_string();
+        let _ = db::complete_import_run(
+            &conn,
+            run_id,
+            "error",
+            files_discovered,
+            0,
+            0,
+            0,
+            &parsed.warnings,
+            &message,
+        );
+        if let Some(job) = reporter {
+            job.fail(message.clone(), parsed.warnings.clone());
+        }
+        message
+    })?;
+
+    let import_result = (|| -> Result<(usize, usize, String, Vec<ImportRunFileItem>), String> {
+        let tx = conn.transaction().map_err(|err| err.to_string())?;
+        let mut inserted = 0usize;
+        let mut deduped = 0usize;
+        let mut counters_by_hash: HashMap<String, ImportFileCounters> = HashMap::new();
+        let mut skip_hash: HashMap<String, bool> = HashMap::new();
+
+        reporter.map(|job| {
+            job.running(
+                "persisting_sources",
+                55.0,
+                0,
+                parsed.source_files.len() as i64,
+                format!(
+                    "Persistindo metadados de {} arquivo(s) no histórico...",
+                    parsed.source_files.len()
+                ),
+            )
+        });
+
+        for source in &parsed.source_files {
+            if source.status == "parsed" && !reprocess {
+                let already_imported =
+                    db::source_file_exists(&tx, &source.hash).map_err(|err| err.to_string())?;
+                if already_imported {
+                    skip_hash.insert(source.hash.clone(), true);
+                }
+            }
+
+            db::upsert_source_file(
+                &tx,
+                &source.path,
+                &source.hash,
+                &source.source_type,
+                &source.status,
+                source.transaction_count,
+                &source.error,
+            )
+            .map_err(|err| err.to_string())?;
+        }
+
+        let total_transactions = parsed.transactions.len() as i64;
+        for (index, tx_item) in parsed.transactions.iter().enumerate() {
+            let counters = counters_by_hash
+                .entry(tx_item.source_file_hash.clone())
+                .or_default();
+            if skip_hash
+                .get(&tx_item.source_file_hash)
+                .copied()
+                .unwrap_or(false)
+            {
+                deduped += 1;
+                counters.deduped_count += 1;
+            } else {
+                if reprocess {
+                    let repaired = db::repair_transaction_encoding_from_source(&tx, tx_item)
+                        .map_err(|err| err.to_string())?;
+                    if repaired {
+                        deduped += 1;
+                        counters.deduped_count += 1;
+                        continue;
+                    }
+
+                    let refreshed = db::refresh_transaction_payload_if_anomalous(&tx, tx_item)
+                        .map_err(|err| err.to_string())?;
+                    if refreshed {
+                        deduped += 1;
+                        counters.deduped_count += 1;
+                        continue;
+                    }
+                }
+
+                let was_inserted =
+                    db::insert_transaction(&tx, tx_item).map_err(|err| err.to_string())?;
+                if was_inserted {
+                    inserted += 1;
+                    counters.inserted_count += 1;
+                } else {
+                    deduped += 1;
+                    counters.deduped_count += 1;
+                }
+            }
+
+            if let Some(job) = reporter {
+                let completed = (index + 1) as i64;
+                if total_transactions == 0
+                    || completed == total_transactions
+                    || completed % 200 == 0
+                {
+                    let ratio = if total_transactions == 0 {
+                        1.0
+                    } else {
+                        completed as f64 / total_transactions as f64
+                    };
+                    job.running(
+                        "importing_transactions",
+                        55.0 + (ratio * 30.0),
+                        completed,
+                        total_transactions,
+                        format!(
+                            "Importando transações {completed}/{}...",
+                            total_transactions
+                        ),
+                    );
+                }
+            }
+        }
+
+        reporter.map(|job| {
+            job.running(
+                "auto_categorization",
+                90.0,
+                inserted as i64,
+                total_transactions,
+                "Aplicando categorização automática e finalizando execução...",
+            )
+        });
+
+        apply_auto_categorization(&tx).map_err(|err| err.to_string())?;
+        save_last_import_path(&tx, &base_path).map_err(|err| err.to_string())?;
+
+        let files = build_import_run_file_items(run_id, &parsed.source_files, &counters_by_hash);
+        for item in &files {
+            db::insert_import_run_file(&tx, item).map_err(|err| err.to_string())?;
+        }
+
+        let status = derive_import_run_status(&parsed.source_files).to_string();
+        db::complete_import_run(
+            &tx,
+            run_id,
+            &status,
+            files_discovered,
+            parsed.source_files.len() as i64,
+            inserted as i64,
+            deduped as i64,
+            &parsed.warnings,
+            "",
+        )
+        .map_err(|err| err.to_string())?;
+
+        tx.commit().map_err(|err| err.to_string())?;
+        Ok((inserted, deduped, status, files))
+    })();
+
+    match import_result {
+        Ok((inserted, deduped, status, files)) => {
+            let response = ImportRunResponse {
+                run_id,
+                status,
+                files_processed: parsed.source_files.len(),
+                inserted,
+                deduped,
+                warnings: parsed.warnings.clone(),
+                files,
+            };
+            if let Some(job) = reporter {
+                job.finalize(response.clone(), summarize_completed_import(&response));
+            }
+            Ok(response)
+        }
+        Err(message) => {
+            let _ = db::complete_import_run(
+                &conn,
+                run_id,
+                "error",
+                files_discovered,
+                0,
+                0,
+                0,
+                &parsed.warnings,
+                &message,
+            );
+            if let Some(job) = reporter {
+                job.fail(message.clone(), parsed.warnings.clone());
+            }
+            Err(message)
         }
     }
 }
@@ -61,73 +830,141 @@ pub fn import_run(
     state: State<AppState>,
     base_path: String,
     reprocess: Option<bool>,
+    failed_only: Option<bool>,
+    scope: Option<ImportRunScope>,
 ) -> Result<ImportRunResponse, String> {
-    let mut conn = db::open_connection().map_err(|err| err.to_string())?;
-    db::init_database(&conn).map_err(|err| err.to_string())?;
+    let reprocess = reprocess.unwrap_or(false);
+    let failed_only = failed_only.unwrap_or(false);
+    let initial_scope = scope.unwrap_or_default();
+    let run_id = create_import_run_record(&base_path, reprocess, failed_only, &initial_scope)?;
+    run_import_pipeline(
+        &state,
+        run_id,
+        base_path,
+        reprocess,
+        failed_only,
+        initial_scope,
+        None,
+    )
+}
+
+#[tauri::command]
+pub fn import_job_start(
+    state: State<AppState>,
+    base_path: String,
+    reprocess: Option<bool>,
+    failed_only: Option<bool>,
+    scope: Option<ImportRunScope>,
+) -> Result<ImportJobStatusResponse, String> {
+    if state.has_active_import_job() {
+        return Err(
+            "Ja existe uma importacao em andamento. Aguarde a conclusao para iniciar outra."
+                .to_string(),
+        );
+    }
 
     let reprocess = reprocess.unwrap_or(false);
-    let btg_password = read_provider_password("btg")
-        .map_err(|err| err.to_string())?
-        .unwrap_or_default();
-    let parsed =
-        run_importer_parse(&state, &base_path, &btg_password).map_err(|err| err.to_string())?;
+    let failed_only = failed_only.unwrap_or(false);
+    let initial_scope = scope.unwrap_or_default();
+    let run_id = create_import_run_record(&base_path, reprocess, failed_only, &initial_scope)?;
+    let job_id = state.next_import_job_id();
+    let started_at = Utc::now().to_rfc3339();
+    let snapshot = ImportJobStatusResponse {
+        job_id: job_id.clone(),
+        run_id,
+        status: "queued".to_string(),
+        phase: "queued".to_string(),
+        progress_percent: 0.0,
+        current: 0,
+        total: 0,
+        message: "Importacao enfileirada.".to_string(),
+        started_at,
+        finished_at: String::new(),
+        warnings: Vec::new(),
+        error_message: String::new(),
+        result: None,
+    };
+    let app_state = state.inner().clone();
+    app_state.upsert_import_job(snapshot.clone());
 
-    db::backup_database().map_err(|err| err.to_string())?;
+    tauri::async_runtime::spawn({
+        let app_state = app_state.clone();
+        let job_id = job_id.clone();
+        let base_path = base_path.clone();
+        let initial_scope = initial_scope.clone();
+        async move {
+            let app_state_for_blocking = app_state.clone();
+            let job_id_for_blocking = job_id.clone();
+            let background = tauri::async_runtime::spawn_blocking(move || {
+                let reporter = ImportJobReporter::new(
+                    app_state_for_blocking.clone(),
+                    job_id_for_blocking.clone(),
+                );
+                reporter.running(
+                    "preparing_scope",
+                    2.0,
+                    0,
+                    0,
+                    "Preparando job de importacao...",
+                );
+                run_import_pipeline(
+                    &app_state_for_blocking,
+                    run_id,
+                    base_path,
+                    reprocess,
+                    failed_only,
+                    initial_scope,
+                    Some(&reporter),
+                )
+            })
+            .await;
 
-    let tx = conn.transaction().map_err(|err| err.to_string())?;
-    let mut inserted = 0usize;
-    let mut deduped = 0usize;
-
-    let mut skip_hash: HashMap<String, bool> = HashMap::new();
-
-    for source in &parsed.source_files {
-        if source.status == "parsed" && !reprocess {
-            let already_imported =
-                db::source_file_exists(&tx, &source.hash).map_err(|err| err.to_string())?;
-            if already_imported {
-                skip_hash.insert(source.hash.clone(), true);
+            if let Err(error) = background {
+                let reporter = ImportJobReporter::new(app_state.clone(), job_id.clone());
+                reporter.fail(
+                    format!("Falha interna ao executar job de importacao: {error}"),
+                    Vec::new(),
+                );
             }
         }
+    });
 
-        db::upsert_source_file(
-            &tx,
-            &source.path,
-            &source.hash,
-            &source.source_type,
-            &source.status,
-            source.transaction_count,
-            &source.error,
-        )
+    Ok(snapshot)
+}
+
+#[tauri::command]
+pub fn import_job_status(
+    state: State<AppState>,
+    job_id: String,
+) -> Result<ImportJobStatusResponse, String> {
+    state
+        .get_import_job(job_id.trim())
+        .ok_or_else(|| "Job de importacao nao encontrado.".to_string())
+}
+
+#[tauri::command]
+pub fn import_history(
+    base_path: Option<String>,
+    limit: Option<i64>,
+) -> Result<ImportHistoryResponse, String> {
+    let conn = db::open_connection().map_err(|err| err.to_string())?;
+    db::init_database(&conn).map_err(|err| err.to_string())?;
+
+    let normalized_base_path = base_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let run_limit = limit.unwrap_or(8).clamp(1, 20);
+    let runs = db::list_import_runs(&conn, normalized_base_path, run_limit)
         .map_err(|err| err.to_string())?;
-    }
+    let latest_files = db::list_latest_import_run_files(&conn, normalized_base_path, run_limit * 8)
+        .map_err(|err| err.to_string())?;
+    let source_summary = summarize_import_sources(&latest_files);
 
-    for tx_item in &parsed.transactions {
-        if skip_hash
-            .get(&tx_item.source_file_hash)
-            .copied()
-            .unwrap_or(false)
-        {
-            deduped += 1;
-            continue;
-        }
-        let was_inserted = db::insert_transaction(&tx, tx_item).map_err(|err| err.to_string())?;
-        if was_inserted {
-            inserted += 1;
-        } else {
-            deduped += 1;
-        }
-    }
-
-    apply_auto_categorization(&tx).map_err(|err| err.to_string())?;
-    tx.commit().map_err(|err| err.to_string())?;
-
-    save_last_import_path(&conn, &base_path).map_err(|err| err.to_string())?;
-
-    Ok(ImportRunResponse {
-        files_processed: parsed.source_files.len(),
-        inserted,
-        deduped,
-        warnings: parsed.warnings,
+    Ok(ImportHistoryResponse {
+        runs,
+        latest_files,
+        source_summary,
     })
 }
 
@@ -508,6 +1345,21 @@ pub fn settings_password_test(
 }
 
 #[tauri::command]
+pub fn settings_password_status(
+    input: SettingsPasswordTestInput,
+) -> Result<SettingsPasswordStatusResponse, String> {
+    let provider = input.provider.trim();
+    if provider.is_empty() {
+        return Err("Provedor de senha invalido.".to_string());
+    }
+    let exists = read_provider_password(provider)
+        .map_err(|err| err.to_string())?
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false);
+    Ok(SettingsPasswordStatusResponse { exists })
+}
+
+#[tauri::command]
 pub fn settings_auto_import_get() -> Result<SettingsAutoImportResponse, String> {
     let conn = db::open_connection().map_err(|err| err.to_string())?;
     db::init_database(&conn).map_err(|err| err.to_string())?;
@@ -597,28 +1449,27 @@ pub fn observability_log_event(
 ) -> Result<SettingsSimpleResponse, String> {
     let conn = db::open_connection().map_err(|err| err.to_string())?;
     db::init_database(&conn).map_err(|err| err.to_string())?;
-    let normalized = normalize_observability_log_event_input(input).map_err(|err| err.to_string())?;
+    let normalized =
+        normalize_observability_log_event_input(input).map_err(|err| err.to_string())?;
     db::append_observability_event(
         &conn,
         &normalized.level,
         &normalized.event_type,
         &normalized.scope,
         &normalized.message,
-        normalized
-            .context_json
-            .as_deref()
-            .unwrap_or("{}"),
+        normalized.context_json.as_deref().unwrap_or("{}"),
     )
     .map_err(|err| err.to_string())?;
     Ok(SettingsSimpleResponse { ok: true })
 }
 
 #[tauri::command]
-pub fn observability_error_trail(limit: Option<i64>) -> Result<Vec<ObservabilityEventItem>, String> {
+pub fn observability_error_trail(
+    limit: Option<i64>,
+) -> Result<Vec<ObservabilityEventItem>, String> {
     let conn = db::open_connection().map_err(|err| err.to_string())?;
     db::init_database(&conn).map_err(|err| err.to_string())?;
-    db::list_error_trail(&conn, limit.unwrap_or(40))
-        .map_err(|err| err.to_string())
+    db::list_error_trail(&conn, limit.unwrap_or(40)).map_err(|err| err.to_string())
 }
 
 #[tauri::command]
@@ -750,42 +1601,48 @@ pub fn reconciliation_summary(
             )?;
             let pending_review_count = db::account_pending_review_count(&conn, account_type)?;
 
-            let (snapshot_cents, snapshot_at, reconstructed_cents, estimated_cents, divergence_cents, status) =
-                if let Some((snapshot_cents, snapshot_at)) = snapshot {
-                    let reconstructed_cents =
-                        db::account_non_snapshot_total_until(&conn, account_type, &snapshot_at)?;
-                    let after_snapshot =
-                        db::account_non_snapshot_total_after(&conn, account_type, &snapshot_at)?;
-                    let estimated_cents = snapshot_cents + after_snapshot;
-                    let divergence_cents = snapshot_cents - reconstructed_cents;
-                    let divergence_abs = divergence_cents.abs();
-                    let status = if divergence_abs == 0 {
-                        "ok".to_string()
-                    } else if divergence_abs <= 5_000 {
-                        "warning".to_string()
-                    } else {
-                        "divergent".to_string()
-                    };
-                    (
-                        Some(snapshot_cents),
-                        snapshot_at,
-                        reconstructed_cents,
-                        estimated_cents,
-                        Some(divergence_cents),
-                        status,
-                    )
+            let (
+                snapshot_cents,
+                snapshot_at,
+                reconstructed_cents,
+                estimated_cents,
+                divergence_cents,
+                status,
+            ) = if let Some((snapshot_cents, snapshot_at)) = snapshot {
+                let reconstructed_cents =
+                    db::account_non_snapshot_total_until(&conn, account_type, &snapshot_at)?;
+                let after_snapshot =
+                    db::account_non_snapshot_total_after(&conn, account_type, &snapshot_at)?;
+                let estimated_cents = snapshot_cents + after_snapshot;
+                let divergence_cents = snapshot_cents - reconstructed_cents;
+                let divergence_abs = divergence_cents.abs();
+                let status = if divergence_abs == 0 {
+                    "ok".to_string()
+                } else if divergence_abs <= 5_000 {
+                    "warning".to_string()
                 } else {
-                    let reconstructed_cents =
-                        db::account_non_snapshot_total_all_time(&conn, account_type)?;
-                    (
-                        None,
-                        String::new(),
-                        reconstructed_cents,
-                        reconstructed_cents,
-                        None,
-                        "no_snapshot".to_string(),
-                    )
+                    "divergent".to_string()
                 };
+                (
+                    Some(snapshot_cents),
+                    snapshot_at,
+                    reconstructed_cents,
+                    estimated_cents,
+                    Some(divergence_cents),
+                    status,
+                )
+            } else {
+                let reconstructed_cents =
+                    db::account_non_snapshot_total_all_time(&conn, account_type)?;
+                (
+                    None,
+                    String::new(),
+                    reconstructed_cents,
+                    reconstructed_cents,
+                    None,
+                    "no_snapshot".to_string(),
+                )
+            };
 
             Ok(ReconciliationAccountItem {
                 account_type: account_type.to_string(),
@@ -1107,8 +1964,8 @@ fn normalize_reconciliation_input(mut input: ReconciliationInput) -> Result<Reco
     input.period_start = normalize_date_field(&input.period_start, "Periodo inicial")?;
     input.period_end = normalize_date_field(&input.period_end, "Periodo final")?;
 
-    let start = parse_date_only(&input.period_start)
-        .ok_or_else(|| anyhow!("Periodo inicial invalido."))?;
+    let start =
+        parse_date_only(&input.period_start).ok_or_else(|| anyhow!("Periodo inicial invalido."))?;
     let end =
         parse_date_only(&input.period_end).ok_or_else(|| anyhow!("Periodo final invalido."))?;
     if end < start {
@@ -1130,7 +1987,9 @@ fn normalize_observability_log_event_input(
         return Err(anyhow!("Tipo de evento de observabilidade e obrigatorio."));
     }
     if input.event_type.len() > 96 {
-        return Err(anyhow!("Tipo de evento de observabilidade excede 96 caracteres."));
+        return Err(anyhow!(
+            "Tipo de evento de observabilidade excede 96 caracteres."
+        ));
     }
 
     input.scope = input.scope.trim().to_string();
@@ -1146,7 +2005,9 @@ fn normalize_observability_log_event_input(
         return Err(anyhow!("Mensagem de observabilidade e obrigatoria."));
     }
     if input.message.len() > 2_000 {
-        return Err(anyhow!("Mensagem de observabilidade excede 2000 caracteres."));
+        return Err(anyhow!(
+            "Mensagem de observabilidade excede 2000 caracteres."
+        ));
     }
 
     input.context_json = input
@@ -1214,18 +2075,29 @@ fn run_importer_parse(
     state: &AppState,
     base_path: &str,
     btg_password: &str,
+    include_paths: &[String],
 ) -> Result<ImporterParseOutput> {
-    let output = run_importer_command(
-        state,
-        &[
-            "parse",
-            "--base-path",
-            base_path,
-            "--btg-password",
-            btg_password,
-        ],
-    )
-    .context("Falha ao executar parse no importer.")?;
+    let mut parse_args = vec![
+        "parse".to_string(),
+        "--base-path".to_string(),
+        base_path.to_string(),
+        "--btg-password".to_string(),
+        btg_password.to_string(),
+    ];
+    for include_path in include_paths {
+        if include_path.trim().is_empty() {
+            continue;
+        }
+        parse_args.push("--include-path".to_string());
+        parse_args.push(include_path.clone());
+    }
+    let parse_arg_refs = parse_args
+        .iter()
+        .map(|item| item.as_str())
+        .collect::<Vec<_>>();
+
+    let output = run_importer_command(state, &parse_arg_refs)
+        .context("Falha ao executar parse no importer.")?;
 
     if !output.status.success() {
         return Err(anyhow!(String::from_utf8_lossy(&output.stderr).to_string()));
@@ -2111,6 +2983,30 @@ mod tests {
             .expect_err("missing goal should be rejected")
             .to_string();
         assert!(err.contains("Meta informada nao existe."));
+    }
+
+    #[test]
+    fn derive_import_scope_mode_prioritizes_source_scope() {
+        let mode = derive_import_scope_mode(
+            true,
+            true,
+            &["btg_card_encrypted_xlsx".to_string()],
+            &[r"C:\Dados\arquivo.xlsx".to_string()],
+        );
+        assert_eq!(mode, "source_failed_only");
+    }
+
+    #[test]
+    fn empty_import_scope_warning_is_specific_for_filtered_failed_scope() {
+        let warning = build_empty_import_scope_warning(
+            &ImportRunScope {
+                mode: "source_failed_only".to_string(),
+                include_paths: Vec::new(),
+                source_types: vec!["btg_card_encrypted_xlsx".to_string()],
+            },
+            true,
+        );
+        assert!(warning.contains("fontes selecionadas"));
     }
 
     #[test]

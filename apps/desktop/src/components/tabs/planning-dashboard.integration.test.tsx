@@ -3,9 +3,9 @@
 import { useState } from 'react'
 import type { FormEvent } from 'react'
 
-import { render, screen } from '@testing-library/react'
+import { cleanup, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { DashboardTab } from './DashboardTab'
 import { PlanningTab } from './PlanningTab'
@@ -301,12 +301,77 @@ function PlanningHarness({
       onRunProjection={onRunProjection}
       categoryOptions={categoryOptions}
       subcategoriesByCategory={subcategoriesByCategory}
+      hasImportedFinancialData={true}
       mode="advanced"
     />
   )
 }
 
+afterEach(() => {
+  cleanup()
+})
+
 describe('integration flows - planning and dashboard', () => {
+  it('shows a dedicated resume card for the pending first-use journey in dashboard', async () => {
+    const user = userEvent.setup()
+    const onResumeSetup = vi.fn()
+    const onOpenSecurity = vi.fn()
+
+    render(
+      <DashboardTab
+        dashboard={{
+          kpis: {
+            incomeCents: 150000,
+            expenseCents: -90000,
+            netCents: 60000,
+            txCount: 14,
+          },
+          selectedBasis: 'purchase',
+          series: [],
+          topCategories: [],
+        }}
+        uncategorizedCount={2}
+        transactions={buildPendingTransactions(2)}
+        hasImportedFinancialData={true}
+        firstUseJourneyCard={{
+          title: 'Setup inicial pendente',
+          description: 'Continue a configuração mínima do app.',
+          completedCount: 2,
+          totalCount: 4,
+          steps: [
+            { id: 'base_path', title: 'Definir pasta base', done: true },
+            { id: 'btg_password', title: 'Salvar senha do BTG', done: true },
+            { id: 'btg_password_test', title: 'Testar senha do BTG', done: false },
+            { id: 'first_import', title: 'Executar primeira importação', done: false },
+          ],
+          nextStepTitle: 'Testar senha do BTG',
+          primaryAction: {
+            label: 'Retomar setup inicial',
+            onClick: onResumeSetup,
+          },
+          secondaryAction: {
+            label: 'Abrir segurança',
+            onClick: onOpenSecurity,
+            tone: 'ghost',
+          },
+        }}
+        reconciliation={reconciliationSummary}
+        monthlyBudgetSummary={monthlyBudgetSummary}
+        chartsEnabled={false}
+        mode="simple"
+      />,
+    )
+
+    expect(screen.getByText(/Setup inicial pendente/i)).toBeTruthy()
+    expect(screen.getByText(/Próxima etapa recomendada:/i)).toBeTruthy()
+
+    await user.click(screen.getByRole('button', { name: /Retomar setup inicial/i }))
+    await user.click(screen.getByRole('button', { name: /Abrir segurança/i }))
+
+    expect(onResumeSetup).toHaveBeenCalledTimes(1)
+    expect(onOpenSecurity).toHaveBeenCalledTimes(1)
+  })
+
   it('covers dashboard KPI, pending queue and simple-mode analysis toggle', async () => {
     const user = userEvent.setup()
     const onOpenBudgetPlanner = vi.fn()
@@ -344,6 +409,7 @@ describe('integration flows - planning and dashboard', () => {
         }}
         uncategorizedCount={8}
         transactions={buildPendingTransactions(8)}
+        hasImportedFinancialData={true}
         reconciliation={reconciliationSummary}
         monthlyBudgetSummary={monthlyBudgetSummary}
         onOpenBudgetPlanner={onOpenBudgetPlanner}

@@ -1,20 +1,49 @@
-﻿import { brl, shortDate } from '../../../lib/format'
+import { useRef } from 'react'
+
+import { FirstUseJourneyCard } from '../../common/FirstUseJourneyCard'
+import { brl, shortDate } from '../../../lib/format'
 import type { DashboardSummaryResponse, TransactionItem } from '../../../types'
+import type { FirstUseJourneyCardProps } from '../../common/FirstUseJourneyCard'
 
 interface DashboardTabProps {
   dashboard: DashboardSummaryResponse | null
   uncategorizedCount: number
   transactions: TransactionItem[]
+  firstUseJourneyCard?: FirstUseJourneyCardProps | null
+  onBootstrapSegmentVisible?: (segment: 'initial_tab' | 'initial_cards') => void
 }
 
 export function LegacyDashboardTab({
   dashboard,
   uncategorizedCount,
   transactions,
+  firstUseJourneyCard,
+  onBootstrapSegmentVisible,
 }: DashboardTabProps) {
+  const loggedSegmentsRef = useRef({
+    initial_tab: false,
+    initial_cards: false,
+  })
+
+  const markSegment = (segment: 'initial_tab' | 'initial_cards') => {
+    if (loggedSegmentsRef.current[segment]) return
+    loggedSegmentsRef.current[segment] = true
+    onBootstrapSegmentVisible?.(segment)
+  }
+
   return (
     <>
-      <section className="panel kpi-grid">
+      {firstUseJourneyCard && <FirstUseJourneyCard {...firstUseJourneyCard} />}
+
+      <section
+        className="panel kpi-grid"
+        ref={(node) => {
+          if (node) {
+            markSegment('initial_tab')
+            markSegment('initial_cards')
+          }
+        }}
+      >
         <article className="kpi-card">
           <h3>Receitas</h3>
           <strong className="pos">{brl(dashboard?.kpis.incomeCents ?? 0)}</strong>
@@ -72,6 +101,3 @@ export function LegacyDashboardTab({
     </>
   )
 }
-
-
-

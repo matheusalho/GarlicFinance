@@ -16,6 +16,12 @@ def main() -> int:
     parse_parser = subparsers.add_parser("parse", help="Escaneia e parseia arquivos financeiros")
     parse_parser.add_argument("--base-path", required=True, help="Pasta ArquivosFinance")
     parse_parser.add_argument("--btg-password", default="", help="Senha dos arquivos criptografados do BTG")
+    parse_parser.add_argument(
+        "--include-path",
+        action="append",
+        default=[],
+        help="Processa somente os arquivos informados (pode repetir a flag).",
+    )
 
     scan_parser = subparsers.add_parser("scan", help="Somente escaneia candidatos de importação")
     scan_parser.add_argument("--base-path", required=True, help="Pasta ArquivosFinance")
@@ -32,7 +38,11 @@ def main() -> int:
         return 0
 
     if args.command == "parse":
-        result = parse_all(Path(args.base_path), btg_password=args.btg_password)
+        result = parse_all(
+            Path(args.base_path),
+            btg_password=args.btg_password,
+            include_paths=args.include_path,
+        )
         _print_json(result)
         return 0
 
@@ -50,4 +60,3 @@ def _print_json(payload: dict) -> None:
 
 if __name__ == "__main__":
     sys.exit(main())
-

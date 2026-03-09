@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 
-import { render, screen, waitFor } from '@testing-library/react'
+import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { FormEvent } from 'react'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { SettingsTab } from './SettingsTab'
 import { TransactionsTab } from './TransactionsTab'
@@ -67,6 +67,10 @@ const dryRunResponse: RulesDryRunResponse = {
   ],
 }
 
+afterEach(() => {
+  cleanup()
+})
+
 const tx1: TransactionItem = {
   id: 301,
   sourceType: 'manual',
@@ -102,13 +106,66 @@ const tx2: TransactionItem = {
 function buildSettingsProps() {
   return {
     loading: false,
+    importJob: null,
+    importBusy: false,
     basePath: 'C:\\ArquivosFinance',
     onBasePathChange: vi.fn(),
     autoImportEnabled: false,
     autoImportLoaded: true,
     onToggleAutoImport: vi.fn(),
     onImport: vi.fn(),
+    onImportFailedOnly: vi.fn(),
+    onImportSelective: vi.fn(),
     importWarnings: [],
+    importHistory: {
+      runs: [
+        {
+          id: 1,
+          basePath: 'C:\\ArquivosFinance',
+          startedAt: '2026-03-07T10:00:00Z',
+          finishedAt: '2026-03-07T10:01:00Z',
+          status: 'partial' as const,
+          reprocess: false,
+          failedOnly: false,
+          requestedScope: { mode: 'all', includePaths: [], sourceTypes: [] },
+          filesDiscovered: 4,
+          filesProcessed: 4,
+          insertedCount: 12,
+          dedupedCount: 3,
+          warningCount: 1,
+          warnings: ['1 arquivo com erro de senha'],
+          errorMessage: '',
+        },
+      ],
+      latestFiles: [
+        {
+          importRunId: 1,
+          path: 'C:\\ArquivosFinance\\CartaoBTG\\arquivo.xlsx',
+          name: 'arquivo.xlsx',
+          fileHash: 'hash-1',
+          sourceType: 'btg_card_encrypted_xlsx',
+          status: 'error',
+          transactionCount: 0,
+          insertedCount: 0,
+          dedupedCount: 0,
+          errorMessage: 'Senha inválida',
+          observedAt: '2026-03-07T10:01:00Z',
+        },
+      ],
+      sourceSummary: [
+        {
+          sourceType: 'btg_card_encrypted_xlsx',
+          fileCount: 1,
+          parsedCount: 0,
+          errorCount: 1,
+          insertedCount: 0,
+          dedupedCount: 0,
+          lastObservedAt: '2026-03-07T10:01:00Z',
+        },
+      ],
+    },
+    onRefreshImportHistory: vi.fn(),
+    btgPasswordConfigured: true,
     btgPasswordInput: '',
     onBtgPasswordInputChange: vi.fn(),
     onSavePassword: vi.fn(),
@@ -158,6 +215,8 @@ function buildSettingsProps() {
       newPlanningEnabled: true,
       newSettingsEnabled: true,
       onboardingEnabled: true,
+      idleTabPrefetchEnabled: true,
+      v2AsyncJobsEnabled: true,
     },
     onFeatureFlagsChange: vi.fn(),
     onboardingState: { completed: false, stepsCompleted: [] },
@@ -167,6 +226,64 @@ function buildSettingsProps() {
 }
 
 describe('integration flows - transactions and settings business regressions', () => {
+  it('renders the Import Center 2.0 base with recent runs and latest file status', async () => {
+    const user = userEvent.setup()
+    const props = buildSettingsProps()
+
+    render(<SettingsTab {...props} />)
+
+    expect(screen.getByText(/Central de Importação 2.0/i)).toBeTruthy()
+    expect(screen.getByText(/Histórico recente, último status por arquivo/i)).toBeTruthy()
+    expect(screen.getAllByText(/BTG Cartão/i).length).toBeGreaterThanOrEqual(1)
+    expect(screen.getByText(/Senha inválida/i)).toBeTruthy()
+
+    await user.click(screen.getByRole('button', { name: /Atualizar histórico/i }))
+
+    expect(props.onRefreshImportHistory).toHaveBeenCalledTimes(1)
+
+    await user.click(screen.getByRole('button', { name: /Falhas da fonte/i }))
+
+    expect(props.onImportSelective).toHaveBeenCalledWith({
+      failedOnly: true,
+      sourceTypes: ['btg_card_encrypted_xlsx'],
+    })
+  })
+
+  it('shows a dedicated resume CTA for the pending first-use journey in settings', async () => {
+    const user = userEvent.setup()
+    const onResumeOnboarding = vi.fn()
+
+    render(
+      <SettingsTab
+        {...buildSettingsProps()}
+        firstUseJourneyCard={{
+          title: 'Onboarding guiado em aberto',
+          description: 'Retome os primeiros passos para validar o fluxo completo.',
+          completedCount: 2,
+          totalCount: 4,
+          steps: [
+            { id: 'import', title: 'Importar dados', done: true },
+            { id: 'categorize', title: 'Revisar categorias', done: true },
+            { id: 'dashboard', title: 'Explorar dashboard', done: false },
+            { id: 'projection', title: 'Rodar projeção', done: false },
+          ],
+          nextStepTitle: 'Explorar dashboard',
+          primaryAction: {
+            label: 'Retomar onboarding',
+            onClick: onResumeOnboarding,
+          },
+        }}
+      />,
+    )
+
+    expect(screen.getByText(/Onboarding guiado em aberto/i)).toBeTruthy()
+    expect(screen.getByText(/Próxima etapa recomendada:/i)).toBeTruthy()
+
+    await user.click(screen.getByRole('button', { name: /Retomar onboarding/i }))
+
+    expect(onResumeOnboarding).toHaveBeenCalledTimes(1)
+  })
+
   it('covers transactions filters, remote pagination controls and category update callback', async () => {
     const user = userEvent.setup()
     const onApplyFilters = vi.fn()
@@ -204,6 +321,7 @@ describe('integration flows - transactions and settings business regressions', (
           totalCount: 2,
         }}
         reviewQueue={{ items: [tx1], totalCount: 1 }}
+        hasImportedFinancialData={true}
         categoryOptions={categoryTree.map((item) => ({ id: item.id, label: item.name }))}
         subcategoriesByCategory={{
           alimentacao: categoryTree[0]?.subcategories ?? [],

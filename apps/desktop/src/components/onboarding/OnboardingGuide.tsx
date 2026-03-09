@@ -1,6 +1,7 @@
-import { useState } from 'react'
+﻿import { useState } from 'react'
 
 import type { OnboardingStateV1 } from '../../types'
+import { ONBOARDING_GUIDE_STEPS } from './onboardingGuideSteps'
 
 interface OnboardingGuideProps {
   state: OnboardingStateV1
@@ -9,38 +10,6 @@ interface OnboardingGuideProps {
   onGoToTab: (tab: 'settings' | 'transactions' | 'dashboard' | 'planning') => void
   compact?: boolean
 }
-
-const STEPS: Array<{
-  id: 'import' | 'categorize' | 'dashboard' | 'projection'
-  title: string
-  description: string
-  tab: 'settings' | 'transactions' | 'dashboard' | 'planning'
-}> = [
-  {
-    id: 'import',
-    title: '1. Importar arquivos',
-    description: 'Configure a pasta base e rode a importação na aba Configurações.',
-    tab: 'settings',
-  },
-  {
-    id: 'categorize',
-    title: '2. Revisar categorias',
-    description: 'Abra Transações e categorize os itens pendentes com fila de revisão.',
-    tab: 'transactions',
-  },
-  {
-    id: 'dashboard',
-    title: '3. Ler dashboard',
-    description: 'Veja KPIs, tendências e top categorias na aba Dashboard.',
-    tab: 'dashboard',
-  },
-  {
-    id: 'projection',
-    title: '4. Rodar projeção',
-    description: 'Em Planejamento, execute cenários para prever saldo futuro.',
-    tab: 'planning',
-  },
-]
 
 export function OnboardingGuide({
   state,
@@ -51,7 +20,7 @@ export function OnboardingGuide({
 }: OnboardingGuideProps) {
   const [expanded, setExpanded] = useState(!compact)
   const progress = state.stepsCompleted.length
-  const total = STEPS.length
+  const total = ONBOARDING_GUIDE_STEPS.length
   const percent = Math.round((progress / total) * 100)
   const progressText = `${progress}/${total} concluídos`
   if (state.completed) return null
@@ -93,7 +62,7 @@ export function OnboardingGuide({
         <p>Tour curto para concluir a configuração inicial. {compact && `(${progressText})`}</p>
       </header>
       <ul>
-        {STEPS.map((step) => {
+        {ONBOARDING_GUIDE_STEPS.map((step) => {
           const done = state.stepsCompleted.includes(step.id)
           return (
             <li key={step.id}>
@@ -102,7 +71,9 @@ export function OnboardingGuide({
                 {!compact && <p>{step.description}</p>}
               </div>
               <div className="gf-inline-actions">
-                <span className={done ? 'gf-step-done' : 'gf-step-pending'}>{done ? 'Concluído' : 'Pendente'}</span>
+                <span className={done ? 'gf-step-done' : 'gf-step-pending'}>
+                  {done ? 'Concluído' : 'Pendente'}
+                </span>
                 <button type="button" className="gf-button ghost" onClick={() => onGoToTab(step.tab)}>
                   Abrir
                 </button>

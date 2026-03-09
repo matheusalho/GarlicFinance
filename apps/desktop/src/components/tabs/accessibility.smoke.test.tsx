@@ -139,6 +139,7 @@ describe('a11y keyboard smoke - transactions and settings', () => {
           ],
           totalCount: 1,
         }}
+        hasImportedFinancialData={true}
         categoryOptions={[
           { id: 'alimentacao', label: 'Alimentacao' },
           { id: 'saude', label: 'Saude' },
@@ -183,13 +184,20 @@ describe('a11y keyboard smoke - transactions and settings', () => {
     const { container } = render(
       <SettingsTab
         loading={false}
+        importJob={null}
+        importBusy={false}
         basePath="C:\\ArquivosFinance"
         onBasePathChange={vi.fn()}
         autoImportEnabled={false}
         autoImportLoaded={true}
         onToggleAutoImport={vi.fn()}
         onImport={vi.fn()}
+        onImportFailedOnly={vi.fn()}
+        onImportSelective={vi.fn()}
         importWarnings={[]}
+        importHistory={{ runs: [], latestFiles: [], sourceSummary: [] }}
+        onRefreshImportHistory={vi.fn()}
+        btgPasswordConfigured={true}
         btgPasswordInput=""
         onBtgPasswordInputChange={vi.fn()}
         onSavePassword={vi.fn()}
@@ -239,6 +247,8 @@ describe('a11y keyboard smoke - transactions and settings', () => {
           newPlanningEnabled: true,
           newSettingsEnabled: true,
           onboardingEnabled: true,
+          idleTabPrefetchEnabled: true,
+          v2AsyncJobsEnabled: true,
         }}
         onFeatureFlagsChange={vi.fn()}
         onboardingState={{ completed: false, stepsCompleted: [] }}

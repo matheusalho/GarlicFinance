@@ -47,6 +47,9 @@ interface TransactionsTabProps {
   subcategoriesByCategory: Record<string, SubcategoryItem[]>
   flowLabel: (flowType: string) => string
   onUpdateCategory: (tx: TransactionItem, categoryId: string, subcategoryId: string) => void
+  hasImportedFinancialData?: boolean
+  onOpenFirstUseSetup?: () => void
+  onOpenImportSettings?: () => void
 }
 
 export function LegacyTransactionsTab({

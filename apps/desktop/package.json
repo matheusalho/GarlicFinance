@@ -14,6 +14,13 @@
     "typecheck": "tsc --noEmit -p tsconfig.app.json",
     "test": "vitest run",
     "smoke:e2e:v16": "node ./scripts/smoke-v16-e2e.mjs",
+    "benchmark:v2:baseline": "node ./scripts/benchmark-v2-baseline.mjs",
+    "benchmark:v2:baseline:dev": "node ./scripts/benchmark-v2-baseline.mjs --server-mode=dev",
+    "benchmark:v2:baseline:preview": "node ./scripts/benchmark-v2-baseline.mjs --server-mode=preview",
+    "benchmark:v2:compare": "npm run benchmark:v2:baseline:dev && npm run benchmark:v2:baseline:preview",
+    "benchmark:v2:prefetch:on:preview": "node ./scripts/benchmark-v2-baseline.mjs --server-mode=preview --idle-prefetch=on",
+    "benchmark:v2:prefetch:off:preview": "node ./scripts/benchmark-v2-baseline.mjs --server-mode=preview --idle-prefetch=off",
+    "benchmark:v2:prefetch:compare:preview": "npm run benchmark:v2:prefetch:on:preview && npm run benchmark:v2:prefetch:off:preview",
     "security:check:rc": "node ./scripts/security-rc-check.mjs"
   },
   "dependencies": {

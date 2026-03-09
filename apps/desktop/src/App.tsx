@@ -1,21 +1,20 @@
-﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { FormEvent } from 'react'
+﻿import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { FormEvent, ReactNode } from 'react'
 
 import './App.css'
 import { AppShell } from './components/layout/AppShell'
+import type { AppShellActivity } from './components/layout/AppShell'
+import { FirstUseWizard, type SetupStepId } from './components/onboarding/FirstUseWizard'
 import { OnboardingGuide } from './components/onboarding/OnboardingGuide'
+import { ONBOARDING_GUIDE_STEPS } from './components/onboarding/onboardingGuideSteps'
 import { DashboardTab } from './components/tabs/DashboardTab'
-import { PlanningTab } from './components/tabs/PlanningTab'
-import { SettingsTab } from './components/tabs/SettingsTab'
-import { TransactionsTab } from './components/tabs/TransactionsTab'
 import { LegacyDashboardTab } from './components/tabs/legacy/LegacyDashboardTab'
-import { LegacyPlanningTab } from './components/tabs/legacy/LegacyPlanningTab'
-import { LegacySettingsTab } from './components/tabs/legacy/LegacySettingsTab'
-import { LegacyTransactionsTab } from './components/tabs/legacy/LegacyTransactionsTab'
 import { useCategoryState } from './hooks/useCategoryState'
 import { useTransactionFilters } from './hooks/useTransactionFilters'
 import { dateInputFromNow } from './lib/format'
+import { getGarlicPerfState } from './lib/perf'
 import { commands } from './lib/tauri'
+import type { FirstUseJourneyCardProps } from './components/common/FirstUseJourneyCard'
 import type {
   AppEventLogItem,
   CategorizationRuleItem,
@@ -24,6 +23,10 @@ import type {
   FeatureFlagsV1,
   GoalAllocationItem,
   GoalListItem,
+  ImportHistoryResponse,
+  ImportJobStatusResponse,
+  ImportRunResponse,
+  ImportRunScope,
   MonthlyBudgetSummaryResponse,
   OnboardingStateV1,
   ProjectionScenario,
@@ -39,11 +42,30 @@ import type {
 
 type BasisMode = 'purchase' | 'cashflow'
 type TabId = 'dashboard' | 'transactions' | 'planning' | 'settings'
+type SecondaryTabId = Exclude<TabId, 'dashboard'>
 type PlanningSectionHint = 'extra' | 'recurring' | 'budget' | 'goals' | 'projection'
+type SettingsSectionHint = 'import' | 'security' | 'ui' | 'categories' | 'rules'
+type BootstrapStepId = 'init_shell' | 'load_settings' | 'refresh_primary' | 'refresh_reference'
+type InitShellSegmentId = 'layout_base' | 'topbar' | 'sidebar' | 'initial_tab' | 'initial_cards'
+type TabPrefetchStatus = 'idle' | 'scheduled' | 'loaded' | 'failed'
+type RefreshScope = 'primary' | 'reference' | 'import_finalize'
 
 const DEFAULT_BASE_PATH = ''
 const DEFAULT_CATEGORY_COLOR = '#6f7d8c'
 const DEFAULT_TRANSACTIONS_PAGE_SIZE = 10
+const BOOTSTRAP_STEPS: BootstrapStepId[] = [
+  'init_shell',
+  'load_settings',
+  'refresh_primary',
+  'refresh_reference',
+]
+const INIT_SHELL_SEGMENTS: InitShellSegmentId[] = [
+  'layout_base',
+  'topbar',
+  'sidebar',
+  'initial_tab',
+  'initial_cards',
+]
 
 const DEFAULT_UI_PREFERENCES: UiPreferencesV1 = {
   theme: 'light',
@@ -61,19 +83,63 @@ const DEFAULT_FEATURE_FLAGS: FeatureFlagsV1 = {
   newPlanningEnabled: true,
   newSettingsEnabled: true,
   onboardingEnabled: true,
+  idleTabPrefetchEnabled: true,
+  v2AsyncJobsEnabled: true,
 }
 
-const ONBOARDING_STEPS: Array<'import' | 'categorize' | 'dashboard' | 'projection'> = [
-  'import',
-  'categorize',
-  'dashboard',
-  'projection',
-]
+const ONBOARDING_STEPS: OnboardingStateV1['stepsCompleted'] = ONBOARDING_GUIDE_STEPS.map(
+  (step) => step.id,
+)
 
 const DEFAULT_ONBOARDING_STATE: OnboardingStateV1 = {
   completed: false,
   stepsCompleted: [],
 }
+
+const SECONDARY_TAB_PREFETCH_ORDER: SecondaryTabId[] = ['transactions', 'settings', 'planning']
+const FIRST_USE_WIZARD_ORDER: SetupStepId[] = [
+  'base_path',
+  'btg_password',
+  'btg_password_test',
+  'first_import',
+]
+
+const loadTransactionsTab = () => import('./components/tabs/TransactionsTab')
+const loadPlanningTab = () => import('./components/tabs/PlanningTab')
+const loadSettingsTab = () => import('./components/tabs/SettingsTab')
+const loadLegacyTransactionsTab = () => import('./components/tabs/legacy/LegacyTransactionsTab')
+const loadLegacyPlanningTab = () => import('./components/tabs/legacy/LegacyPlanningTab')
+const loadLegacySettingsTab = () => import('./components/tabs/legacy/LegacySettingsTab')
+
+const LazyTransactionsTab = lazy(async () => {
+  const module = await loadTransactionsTab()
+  return { default: module.TransactionsTab }
+})
+
+const LazyPlanningTab = lazy(async () => {
+  const module = await loadPlanningTab()
+  return { default: module.PlanningTab }
+})
+
+const LazySettingsTab = lazy(async () => {
+  const module = await loadSettingsTab()
+  return { default: module.SettingsTab }
+})
+
+const LazyLegacyTransactionsTab = lazy(async () => {
+  const module = await loadLegacyTransactionsTab()
+  return { default: module.LegacyTransactionsTab }
+})
+
+const LazyLegacyPlanningTab = lazy(async () => {
+  const module = await loadLegacyPlanningTab()
+  return { default: module.LegacyPlanningTab }
+})
+
+const LazyLegacySettingsTab = lazy(async () => {
+  const module = await loadLegacySettingsTab()
+  return { default: module.LegacySettingsTab }
+})
 
 const SOURCE_OPTIONS = [
   { id: '', label: 'Todas as fontes' },
@@ -94,9 +160,9 @@ const FLOW_OPTIONS = [
 
 const TABS: Array<{ id: TabId; label: string; description: string }> = [
   { id: 'dashboard', label: 'Dashboard', description: 'KPI, tendências e alertas.' },
+  { id: 'settings', label: 'Configurações', description: 'Importação, segurança e preferências.' },
   { id: 'transactions', label: 'Transações', description: 'Revisão e categorização.' },
   { id: 'planning', label: 'Planejamento', description: 'Objetivos, recorrências e cenários.' },
-  { id: 'settings', label: 'Configurações', description: 'Importação, segurança e preferências.' },
 ]
 
 const PROJECTION_SCENARIOS: ProjectionScenario[] = ['base', 'optimistic', 'pessimistic']
@@ -136,6 +202,71 @@ const parsePercentInput = (rawValue: string): number | null => {
   return Math.max(0, Math.min(100, parsed))
 }
 
+const isSecondaryTab = (tabId: TabId): tabId is SecondaryTabId => tabId !== 'dashboard'
+
+function TabFirstVisibleSignal({
+  tabId,
+  onVisible,
+  children,
+}: {
+  tabId: SecondaryTabId
+  onVisible: (tabId: SecondaryTabId) => void
+  children: ReactNode
+}) {
+  useEffect(() => {
+    onVisible(tabId)
+  }, [onVisible, tabId])
+
+  return <>{children}</>
+}
+
+function buildFirstUseWizardSteps(input: {
+  hasBasePath: boolean
+  hasBtgPassword: boolean
+  hasValidatedBtgPassword: boolean
+  hasImportedData: boolean
+}) {
+  return [
+    {
+      id: 'base_path' as const,
+      title: 'Definir pasta base',
+      description: 'Aponte a pasta principal com os arquivos financeiros.',
+      done: input.hasBasePath,
+      actionLabel: 'Usar esta pasta e continuar',
+    },
+    {
+      id: 'btg_password' as const,
+      title: 'Salvar senha do BTG',
+      description: 'Cadastre a senha usada para abrir os arquivos protegidos do cartão BTG.',
+      done: input.hasBtgPassword,
+      actionLabel: 'Salvar senha e continuar',
+    },
+    {
+      id: 'btg_password_test' as const,
+      title: 'Testar senha do BTG',
+      description: 'Valide a credencial antes da primeira importação.',
+      done: input.hasValidatedBtgPassword,
+      actionLabel: 'Testar senha',
+    },
+    {
+      id: 'first_import' as const,
+      title: 'Executar primeira importação',
+      description: 'Rode a primeira leitura para popular dashboard, transações e planejamento.',
+      done: input.hasImportedData,
+      actionLabel: 'Importar agora',
+    },
+  ]
+}
+
+const getFirstIncompleteFirstUseWizardStep = (
+  steps: ReturnType<typeof buildFirstUseWizardSteps>,
+): SetupStepId | null => steps.find((step) => !step.done)?.id ?? null
+
+const nowMs = (): number =>
+  typeof performance !== 'undefined' && typeof performance.now === 'function'
+    ? performance.now()
+    : Date.now()
+
 const buildGoalAllocationDrafts = (
   goals: GoalListItem[],
   scenarioAllocations: Record<ProjectionScenario, GoalAllocationItem[]>,
@@ -167,10 +298,22 @@ const buildGoalAllocationDrafts = (
   return { base, optimistic, pessimistic }
 }
 
+const buildImportCompletionMessage = (
+  result: ImportRunResponse | null,
+  fallbackMessage: string,
+): string => {
+  if (!result) return fallbackMessage
+  return `Importação concluída: ${result.filesProcessed} arquivo(s), ${result.inserted} novas, ${result.deduped} deduplicadas.`
+}
+
 function App() {
   const [activeTab, setActiveTab] = useState<TabId>('dashboard')
   const [planningSectionHint, setPlanningSectionHint] = useState<PlanningSectionHint | undefined>(undefined)
+  const [settingsSectionHint, setSettingsSectionHint] = useState<SettingsSectionHint | undefined>(undefined)
   const [showOnboarding, setShowOnboarding] = useState(true)
+  const [showFirstUseWizard, setShowFirstUseWizard] = useState(true)
+  const [activeFirstUseWizardStep, setActiveFirstUseWizardStep] = useState<SetupStepId>('base_path')
+  const [firstUseBasePathConfirmed, setFirstUseBasePathConfirmed] = useState(false)
   const [basePath, setBasePath] = useState(DEFAULT_BASE_PATH)
   const [periodStart, setPeriodStart] = useState(dateInputFromNow(-90))
   const [periodEnd, setPeriodEnd] = useState(dateInputFromNow(0))
@@ -189,9 +332,15 @@ function App() {
     clearTxFilters,
   } = useTransactionFilters({ periodStart, periodEnd })
 
-  const [loading, setLoading] = useState(false)
+  const [blockingTaskCount, setBlockingTaskCount] = useState(0)
+  const [refreshState, setRefreshState] = useState<Record<RefreshScope, boolean>>({
+    primary: false,
+    reference: false,
+    import_finalize: false,
+  })
   const [statusMessage, setStatusMessage] = useState('Aguardando ação.')
   const [importWarnings, setImportWarnings] = useState<string[]>([])
+  const [importJob, setImportJob] = useState<ImportJobStatusResponse | null>(null)
   const [autoImportEnabled, setAutoImportEnabled] = useState(false)
   const [autoImportLoaded, setAutoImportLoaded] = useState(false)
   const [uiPreferences, setUiPreferences] = useState<UiPreferencesV1>(DEFAULT_UI_PREFERENCES)
@@ -199,6 +348,11 @@ function App() {
   const [onboardingState, setOnboardingState] = useState<OnboardingStateV1>(DEFAULT_ONBOARDING_STATE)
 
   const [dashboard, setDashboard] = useState<DashboardSummaryResponse | null>(null)
+  const [importHistory, setImportHistory] = useState<ImportHistoryResponse>({
+    runs: [],
+    latestFiles: [],
+    sourceSummary: [],
+  })
   const [transactions, setTransactions] = useState<TransactionsListResponse>({
     items: [],
     totals: { incomeCents: 0, expenseCents: 0, netCents: 0 },
@@ -227,6 +381,36 @@ function App() {
   const [rulesDryRun, setRulesDryRun] = useState<RulesDryRunResponse | null>(null)
   const [errorTrail, setErrorTrail] = useState<AppEventLogItem[]>([])
   const didAutoImport = useRef(false)
+  const importJobPollTimeoutRef = useRef<number | null>(null)
+  const bootstrapStartedAtRef = useRef(nowMs())
+  const bootstrapDurationsRef = useRef<Partial<Record<BootstrapStepId, number>>>({})
+  const initShellSegmentsRef = useRef<Partial<Record<InitShellSegmentId, number>>>({})
+  const bootstrapStepLoggedRef = useRef<Record<BootstrapStepId, boolean>>({
+    init_shell: false,
+    load_settings: false,
+    refresh_primary: false,
+    refresh_reference: false,
+  })
+  const initShellSegmentLoggedRef = useRef<Record<InitShellSegmentId, boolean>>({
+    layout_base: false,
+    topbar: false,
+    sidebar: false,
+    initial_tab: false,
+    initial_cards: false,
+  })
+  const bootstrapSummaryLoggedRef = useRef(false)
+  const shellFrontierLoggedRef = useRef(false)
+  const tabPrefetchStatusRef = useRef<Record<SecondaryTabId, TabPrefetchStatus>>({
+    transactions: 'idle',
+    settings: 'idle',
+    planning: 'idle',
+  })
+  const tabFirstAccessStartedAtRef = useRef<Partial<Record<SecondaryTabId, number>>>({})
+  const tabFirstAccessLoggedRef = useRef<Record<SecondaryTabId, boolean>>({
+    transactions: false,
+    settings: false,
+    planning: false,
+  })
   const transactionsRef = useRef<TransactionsListResponse>({
     items: [],
     totals: { incomeCents: 0, expenseCents: 0, netCents: 0 },
@@ -241,6 +425,7 @@ function App() {
   const [transactionsPageSize, setTransactionsPageSize] = useState(DEFAULT_TRANSACTIONS_PAGE_SIZE)
 
   const [btgPasswordInput, setBtgPasswordInput] = useState('')
+  const [btgPasswordConfigured, setBtgPasswordConfigured] = useState(false)
   const [passwordTestMessage, setPasswordTestMessage] = useState('')
   const [passwordTestOk, setPasswordTestOk] = useState<boolean | null>(null)
 
@@ -292,6 +477,40 @@ function App() {
     setSubcategoryDraftName,
   } = useCategoryState(categories)
 
+  const startBlockingTask = useCallback(() => {
+    setBlockingTaskCount((previous) => previous + 1)
+  }, [])
+
+  const finishBlockingTask = useCallback(() => {
+    setBlockingTaskCount((previous) => (previous > 0 ? previous - 1 : 0))
+  }, [])
+
+  const withBlockingTask = useCallback(
+    async <T,>(task: () => Promise<T>): Promise<T> => {
+      startBlockingTask()
+      try {
+        return await task()
+      } finally {
+        finishBlockingTask()
+      }
+    },
+    [finishBlockingTask, startBlockingTask],
+  )
+
+  const setRefreshScopeBusy = useCallback((scope: RefreshScope, busy: boolean) => {
+    setRefreshState((previous) => {
+      if (previous[scope] === busy) return previous
+      return {
+        ...previous,
+        [scope]: busy,
+      }
+    })
+  }, [])
+
+  const loading = blockingTaskCount > 0
+  const importJobActive = importJob !== null && (importJob.status === 'queued' || importJob.status === 'running')
+  const isBackgroundRefreshActive = refreshState.primary || refreshState.reference || refreshState.import_finalize
+
   const statusTone = useMemo<'ok' | 'error' | 'neutral'>(() => {
     const lower = statusMessage.toLowerCase()
     if (lower.includes('erro') || lower.includes('falha')) return 'error'
@@ -300,6 +519,65 @@ function App() {
   }, [statusMessage])
 
   const uncategorizedCount = useMemo(() => reviewQueue.totalCount, [reviewQueue.totalCount])
+  const firstUseWizardSteps = useMemo(
+    () =>
+      buildFirstUseWizardSteps({
+        hasBasePath: basePath.trim().length > 0 && firstUseBasePathConfirmed,
+        hasBtgPassword: btgPasswordConfigured,
+        hasValidatedBtgPassword: passwordTestOk === true,
+        hasImportedData: transactions.totalCount > 0,
+      }),
+    [basePath, btgPasswordConfigured, firstUseBasePathConfirmed, passwordTestOk, transactions.totalCount],
+  )
+  const firstUseWizardCompletedCount = useMemo(
+    () => firstUseWizardSteps.filter((step) => step.done).length,
+    [firstUseWizardSteps],
+  )
+  const firstIncompleteSetupStepId = useMemo(
+    () => getFirstIncompleteFirstUseWizardStep(firstUseWizardSteps),
+    [firstUseWizardSteps],
+  )
+  const firstIncompleteSetupStep = useMemo(
+    () =>
+      firstIncompleteSetupStepId
+        ? firstUseWizardSteps.find((step) => step.id === firstIncompleteSetupStepId) ?? null
+        : null,
+    [firstIncompleteSetupStepId, firstUseWizardSteps],
+  )
+  const nextSetupSettingsSection: SettingsSectionHint =
+    firstIncompleteSetupStepId === 'btg_password' || firstIncompleteSetupStepId === 'btg_password_test'
+      ? 'security'
+      : 'import'
+  const isFirstUseWizardComplete = firstUseWizardSteps.every((step) => step.done)
+  const shouldShowFirstUseWizard =
+    featureFlags.newLayoutEnabled &&
+    featureFlags.onboardingEnabled &&
+    showFirstUseWizard &&
+    activeTab === 'dashboard' &&
+    !isFirstUseWizardComplete
+  const hasImportedFinancialData =
+    (dashboard?.kpis.txCount ?? 0) > 0 ||
+    (reconciliation?.accounts.length ?? 0) > 0 ||
+    reviewQueue.totalCount > 0 ||
+    transactions.items.length > 0
+  const onboardingJourneySteps = useMemo(
+    () =>
+      ONBOARDING_GUIDE_STEPS.map((step) => ({
+        id: step.id,
+        title: step.title.replace(/^\d+\.\s*/, ''),
+        done: onboardingState.stepsCompleted.includes(step.id),
+      })),
+    [onboardingState.stepsCompleted],
+  )
+  const onboardingCompletedCount = useMemo(
+    () => onboardingJourneySteps.filter((step) => step.done).length,
+    [onboardingJourneySteps],
+  )
+  const firstIncompleteOnboardingStep = useMemo(
+    () =>
+      ONBOARDING_GUIDE_STEPS.find((step) => !onboardingState.stepsCompleted.includes(step.id)) ?? null,
+    [onboardingState.stepsCompleted],
+  )
 
   const transactionsRequestFilters = useMemo(
     () => ({
@@ -370,25 +648,363 @@ function App() {
     [featureFlags],
   )
 
+  const getSecondaryTabLoader = useCallback(
+    (tabId: SecondaryTabId) => {
+      if (tabId === 'transactions') {
+        return featureFlags.newTransactionsEnabled ? loadTransactionsTab : loadLegacyTransactionsTab
+      }
+      if (tabId === 'planning') {
+        return featureFlags.newPlanningEnabled ? loadPlanningTab : loadLegacyPlanningTab
+      }
+      return featureFlags.newSettingsEnabled ? loadSettingsTab : loadLegacySettingsTab
+    },
+    [
+      featureFlags.newPlanningEnabled,
+      featureFlags.newSettingsEnabled,
+      featureFlags.newTransactionsEnabled,
+    ],
+  )
+
+  const prefetchSecondaryTab = useCallback(
+    async (tabId: SecondaryTabId) => {
+      const currentStatus = tabPrefetchStatusRef.current[tabId]
+      if (currentStatus === 'scheduled' || currentStatus === 'loaded') return
+      tabPrefetchStatusRef.current[tabId] = 'scheduled'
+      const startedAt = nowMs()
+      try {
+        await getSecondaryTabLoader(tabId)()
+        const durationMs = Number((nowMs() - startedAt).toFixed(2))
+        tabPrefetchStatusRef.current[tabId] = 'loaded'
+        void commands
+          .observabilityLogEvent({
+            level: durationMs >= 500 ? 'warn' : 'info',
+            eventType: 'frontend.tab.prefetch',
+            scope: tabId,
+            message: `Prefetch da aba ${tabId} em ${durationMs}ms`,
+            contextJson: JSON.stringify({
+              tabId,
+              durationMs,
+              timestamp: new Date().toISOString(),
+            }),
+          })
+          .catch(() => {
+            /* no-op */
+          })
+      } catch (error) {
+        tabPrefetchStatusRef.current[tabId] = 'failed'
+        void commands
+          .observabilityLogEvent({
+            level: 'warn',
+            eventType: 'frontend.tab.prefetch',
+            scope: tabId,
+            message: `Falha no prefetch da aba ${tabId}`,
+            contextJson: JSON.stringify({
+              tabId,
+              error: String(error),
+              timestamp: new Date().toISOString(),
+            }),
+          })
+          .catch(() => {
+            /* no-op */
+          })
+      }
+    },
+    [getSecondaryTabLoader],
+  )
+
+  const handleTabChange = useCallback((nextTab: TabId) => {
+    if (isSecondaryTab(nextTab) && tabFirstAccessStartedAtRef.current[nextTab] === undefined) {
+      tabFirstAccessStartedAtRef.current[nextTab] = nowMs()
+    }
+    if (nextTab !== 'planning') setPlanningSectionHint(undefined)
+    if (nextTab !== 'settings') setSettingsSectionHint(undefined)
+    setActiveTab(nextTab)
+  }, [])
+
+  const markSecondaryTabVisible = useCallback((tabId: SecondaryTabId) => {
+    if (tabFirstAccessLoggedRef.current[tabId]) return
+    const startedAt = tabFirstAccessStartedAtRef.current[tabId]
+    if (startedAt === undefined) return
+    tabFirstAccessLoggedRef.current[tabId] = true
+    const durationMs = Number((nowMs() - startedAt).toFixed(2))
+    const prefetched = tabPrefetchStatusRef.current[tabId] === 'loaded'
+    void commands
+      .observabilityLogEvent({
+        level: durationMs >= 500 ? 'warn' : 'info',
+        eventType: 'frontend.tab.first_access',
+        scope: tabId,
+        message: `Primeiro acesso da aba ${tabId} em ${durationMs}ms`,
+        contextJson: JSON.stringify({
+          tabId,
+          durationMs,
+          prefetched,
+          timestamp: new Date().toISOString(),
+        }),
+      })
+      .catch(() => {
+        /* no-op */
+      })
+  }, [])
+
   const openPlanningSection = useCallback((section: PlanningSectionHint) => {
     setPlanningSectionHint(section)
-    setActiveTab('planning')
-  }, [])
+    handleTabChange('planning')
+  }, [handleTabChange])
+
+  const openSettingsSection = useCallback((section: SettingsSectionHint) => {
+    setSettingsSectionHint(section)
+    handleTabChange('settings')
+  }, [handleTabChange])
+
+  const resumeOnboardingJourney = useCallback(() => {
+    setShowOnboarding(true)
+    handleTabChange(firstIncompleteOnboardingStep?.tab ?? 'dashboard')
+  }, [firstIncompleteOnboardingStep, handleTabChange])
 
   const openTransactionsReview = useCallback(() => {
     applyTxPendingContext()
     setTransactionsPage(1)
-    setActiveTab('transactions')
-  }, [applyTxPendingContext])
+    handleTabChange('transactions')
+  }, [applyTxPendingContext, handleTabChange])
 
   const openTransactionsReviewByAccount = useCallback(
     (accountType: string) => {
       const normalizedAccountType = accountType === 'credit_card' ? 'credit_card' : 'checking'
       applyTxPendingContext(normalizedAccountType)
       setTransactionsPage(1)
-      setActiveTab('transactions')
+      handleTabChange('transactions')
     },
-    [applyTxPendingContext],
+    [applyTxPendingContext, handleTabChange],
+  )
+
+  useEffect(() => {
+    if (!featureFlags.newLayoutEnabled || !featureFlags.idleTabPrefetchEnabled || activeTab !== 'dashboard') {
+      return undefined
+    }
+
+    let cancelled = false
+    let timeoutId: ReturnType<typeof setTimeout> | undefined
+    let idleId: number | undefined
+    const browserWindow = typeof window !== 'undefined' ? window : undefined
+    const browserDocument = typeof document !== 'undefined' ? document : undefined
+    const connection = (
+      browserWindow?.navigator as (Navigator & { connection?: { saveData?: boolean } }) | undefined
+    )?.connection
+
+    if (loading) return undefined
+    if (browserDocument?.visibilityState === 'hidden') return undefined
+    if (connection?.saveData) return undefined
+
+    const runPrefetch = async () => {
+      for (const tabId of SECONDARY_TAB_PREFETCH_ORDER) {
+        if (cancelled) return
+        await prefetchSecondaryTab(tabId)
+      }
+    }
+
+    const cancelPrefetch = () => {
+      cancelled = true
+      if (idleId !== undefined && browserWindow && 'cancelIdleCallback' in browserWindow) {
+        browserWindow.cancelIdleCallback(idleId)
+        idleId = undefined
+      }
+      if (timeoutId !== undefined) {
+        globalThis.clearTimeout(timeoutId)
+        timeoutId = undefined
+      }
+    }
+
+    const handleUserIntent = () => {
+      cancelPrefetch()
+    }
+
+    const handleVisibilityChange = () => {
+      if (browserDocument?.visibilityState === 'hidden') cancelPrefetch()
+    }
+
+    browserWindow?.addEventListener('pointerdown', handleUserIntent, { once: true, passive: true })
+    browserWindow?.addEventListener('keydown', handleUserIntent, { once: true })
+    browserWindow?.addEventListener('wheel', handleUserIntent, { once: true, passive: true })
+    browserDocument?.addEventListener('visibilitychange', handleVisibilityChange)
+
+    if (browserWindow && 'requestIdleCallback' in browserWindow) {
+      idleId = browserWindow.requestIdleCallback(
+        () => {
+          if (cancelled) return
+          void runPrefetch()
+        },
+        { timeout: 1200 },
+      )
+    } else {
+      timeoutId = globalThis.setTimeout(() => {
+        if (cancelled) return
+        void runPrefetch()
+      }, 300)
+    }
+
+    return () => {
+      cancelPrefetch()
+      browserWindow?.removeEventListener('pointerdown', handleUserIntent)
+      browserWindow?.removeEventListener('keydown', handleUserIntent)
+      browserWindow?.removeEventListener('wheel', handleUserIntent)
+      browserDocument?.removeEventListener('visibilitychange', handleVisibilityChange)
+    }
+  }, [
+    activeTab,
+    featureFlags.idleTabPrefetchEnabled,
+    featureFlags.newLayoutEnabled,
+    loading,
+    prefetchSecondaryTab,
+  ])
+
+  const emitBootstrapSummaryIfComplete = useCallback(() => {
+    if (bootstrapSummaryLoggedRef.current) return
+    const durations = bootstrapDurationsRef.current
+    const hasAllSteps = BOOTSTRAP_STEPS.every((step) => typeof durations[step] === 'number')
+    if (!hasAllSteps) return
+
+    const stepEntries = BOOTSTRAP_STEPS.map((step) => ({
+      step,
+      durationMs: durations[step] ?? 0,
+    }))
+    const slowestStep = stepEntries.reduce((current, next) =>
+      next.durationMs > current.durationMs ? next : current,
+    )
+    const totalMs = Number((nowMs() - bootstrapStartedAtRef.current).toFixed(2))
+    bootstrapSummaryLoggedRef.current = true
+    void commands
+      .observabilityLogEvent({
+        level: totalMs >= 2_500 ? 'warn' : 'info',
+        eventType: 'frontend.bootstrap.summary',
+        scope: 'app_startup',
+        message: `Bootstrap inicial concluido em ${totalMs}ms`,
+        contextJson: JSON.stringify({
+          totalMs,
+          steps: stepEntries,
+          slowestStep,
+          timestamp: new Date().toISOString(),
+        }),
+      })
+      .catch(() => {
+        /* no-op */
+      })
+  }, [])
+
+  const markBootstrapStep = useCallback(
+    (
+      step: BootstrapStepId,
+      durationMs: number,
+      status: 'ok' | 'error' = 'ok',
+      metadata?: Record<string, unknown>,
+    ) => {
+      if (bootstrapStepLoggedRef.current[step]) return
+      bootstrapStepLoggedRef.current[step] = true
+      const normalizedDuration = Number(durationMs.toFixed(2))
+      bootstrapDurationsRef.current[step] = normalizedDuration
+      void commands
+        .observabilityLogEvent({
+          level: status === 'error' || normalizedDuration >= 1_000 ? 'warn' : 'info',
+          eventType: 'frontend.bootstrap.step',
+          scope: step,
+          message: `Bootstrap step ${step} ${status} em ${normalizedDuration}ms`,
+          contextJson: JSON.stringify({
+            step,
+            status,
+            durationMs: normalizedDuration,
+            sinceAppStartMs: Number((nowMs() - bootstrapStartedAtRef.current).toFixed(2)),
+            timestamp: new Date().toISOString(),
+            ...(metadata ?? {}),
+          }),
+        })
+        .catch(() => {
+          /* no-op */
+        })
+      emitBootstrapSummaryIfComplete()
+    },
+    [emitBootstrapSummaryIfComplete],
+  )
+
+  const markInitShellSegment = useCallback(
+    (segment: InitShellSegmentId) => {
+      if (initShellSegmentLoggedRef.current[segment]) return
+      const readyAtMs = Number((nowMs() - bootstrapStartedAtRef.current).toFixed(2))
+      initShellSegmentLoggedRef.current[segment] = true
+      initShellSegmentsRef.current[segment] = readyAtMs
+      void commands
+        .observabilityLogEvent({
+          level: readyAtMs >= 1_000 ? 'warn' : 'info',
+          eventType: 'frontend.bootstrap.segment',
+          scope: segment,
+          message: `Segmento ${segment} ficou pronto em ${readyAtMs}ms`,
+          contextJson: JSON.stringify({
+            segment,
+            readyAtMs,
+            timestamp: new Date().toISOString(),
+          }),
+        })
+        .catch(() => {
+          /* no-op */
+        })
+
+      const allReady = INIT_SHELL_SEGMENTS.every(
+        (item) => typeof initShellSegmentsRef.current[item] === 'number',
+      )
+      if (!allReady || bootstrapStepLoggedRef.current.init_shell) return
+
+      const segmentEntries = INIT_SHELL_SEGMENTS.map((item) => ({
+        segment: item,
+        readyAtMs: initShellSegmentsRef.current[item] ?? 0,
+      }))
+      const slowestSegment = segmentEntries.reduce((current, next) =>
+        next.readyAtMs > current.readyAtMs ? next : current,
+      )
+      if (!shellFrontierLoggedRef.current) {
+        shellFrontierLoggedRef.current = true
+        const perfState = getGarlicPerfState()
+        if (perfState.firstShellUsefulAt === undefined) perfState.firstShellUsefulAt = nowMs()
+        const entryBootstrapStartedAt = perfState.entryBootstrapStartedAt ?? 0
+        const reactRootCreatedAt = perfState.reactRootCreatedAt ?? entryBootstrapStartedAt
+        const reactRenderScheduledAt = perfState.reactRenderScheduledAt ?? reactRootCreatedAt
+        const firstShellUsefulAt = perfState.firstShellUsefulAt ?? slowestSegment.readyAtMs
+        const entryToRootCreatedMs = Number(
+          Math.max(0, reactRootCreatedAt - entryBootstrapStartedAt).toFixed(2),
+        )
+        const rootCreatedToRenderScheduledMs = Number(
+          Math.max(0, reactRenderScheduledAt - reactRootCreatedAt).toFixed(2),
+        )
+        const renderScheduledToShellUsefulMs = Number(
+          Math.max(0, firstShellUsefulAt - reactRenderScheduledAt).toFixed(2),
+        )
+        const entryToShellUsefulMs = Number(
+          Math.max(0, firstShellUsefulAt - entryBootstrapStartedAt).toFixed(2),
+        )
+
+        void commands
+          .observabilityLogEvent({
+            level: entryToShellUsefulMs >= 1_000 ? 'warn' : 'info',
+            eventType: 'frontend.shell.frontier',
+            scope: 'app_startup',
+            message: `Primeiro shell util em ${entryToShellUsefulMs}ms`,
+            contextJson: JSON.stringify({
+              entryToRootCreatedMs,
+              rootCreatedToRenderScheduledMs,
+              renderScheduledToShellUsefulMs,
+              entryToShellUsefulMs,
+              firstShellUsefulAt,
+              slowestSegment,
+              timestamp: new Date().toISOString(),
+            }),
+          })
+          .catch(() => {
+            /* no-op */
+          })
+      }
+      markBootstrapStep('init_shell', slowestSegment.readyAtMs, 'ok', {
+        segments: segmentEntries,
+        slowestSegment,
+      })
+    },
+    [markBootstrapStep],
   )
 
   const refreshTransactionsOnly = useCallback(async () => {
@@ -451,13 +1067,84 @@ function App() {
     setErrorTrail(await commands.observabilityErrorTrail(40))
   }, [])
 
+  const refreshImportHistoryOnly = useCallback(async () => {
+    const normalizedBasePath = basePath.trim()
+    setImportHistory(
+      await commands.importHistory(normalizedBasePath || undefined, 8),
+    )
+  }, [basePath])
+
   const refreshProjectionIfLoaded = useCallback(async () => {
     if (!projectionScenario) return
     setProjection(await commands.projectionRun({ scenario: projectionScenario, monthsAhead: 24 }))
   }, [projectionScenario])
 
+  const refreshAfterImportJob = useCallback(async () => {
+    setRefreshScopeBusy('import_finalize', true)
+    try {
+      await Promise.all([
+        refreshImportHistoryOnly(),
+        refreshDashboardOnly(),
+        refreshTransactionsOnly(),
+        refreshReviewQueueOnly(),
+        refreshProjectionIfLoaded(),
+        refreshBudgetOnly(),
+        refreshReconciliationOnly(),
+        refreshErrorTrailOnly(),
+      ])
+    } finally {
+      setRefreshScopeBusy('import_finalize', false)
+    }
+  }, [
+    refreshBudgetOnly,
+    refreshDashboardOnly,
+    refreshErrorTrailOnly,
+    refreshImportHistoryOnly,
+    refreshProjectionIfLoaded,
+    refreshReconciliationOnly,
+    refreshReviewQueueOnly,
+    refreshTransactionsOnly,
+    setRefreshScopeBusy,
+  ])
+
+  const refreshAfterTransactionMutation = useCallback(async () => {
+    await Promise.all([
+      refreshDashboardOnly(),
+      refreshTransactionsOnly(),
+      refreshReviewQueueOnly(),
+      refreshProjectionIfLoaded(),
+      refreshBudgetOnly(),
+      refreshReconciliationOnly(),
+    ])
+  }, [
+    refreshBudgetOnly,
+    refreshDashboardOnly,
+    refreshProjectionIfLoaded,
+    refreshReconciliationOnly,
+    refreshReviewQueueOnly,
+    refreshTransactionsOnly,
+  ])
+
+  const refreshAfterCategoryCatalogChange = useCallback(async () => {
+    await Promise.all([
+      refreshCategoriesOnly(),
+      refreshTransactionsOnly(),
+      refreshDashboardOnly(),
+      refreshRulesOnly(),
+      refreshBudgetOnly(),
+    ])
+  }, [
+    refreshBudgetOnly,
+    refreshCategoriesOnly,
+    refreshDashboardOnly,
+    refreshRulesOnly,
+    refreshTransactionsOnly,
+  ])
+
   const refreshPrimaryData = useCallback(async () => {
-    setLoading(true)
+    const startedAt = nowMs()
+    let status: 'ok' | 'error' = 'ok'
+    setRefreshScopeBusy('primary', true)
     try {
       const [dashboardData, txData, reviewQueueData, reconciliationData] = await Promise.all([
         commands.dashboardSummary({ periodStart, periodEnd, basis }),
@@ -470,14 +1157,30 @@ function App() {
       setReviewQueue(reviewQueueData)
       setReconciliation(reconciliationData)
     } catch (error) {
+      status = 'error'
       setStatusMessage(`Falha ao atualizar dados: ${String(error)}`)
     } finally {
-      setLoading(false)
+      markBootstrapStep('refresh_primary', nowMs() - startedAt, status, {
+        activeTab,
+      })
+      setRefreshScopeBusy('primary', false)
     }
-  }, [basis, periodEnd, periodStart, transactionQueryFilters, transactionsRequestFilters])
+  }, [
+    activeTab,
+    basis,
+    markBootstrapStep,
+    periodEnd,
+    periodStart,
+    setRefreshScopeBusy,
+    transactionQueryFilters,
+    transactionsRequestFilters,
+  ])
 
   const refreshReferenceData = useCallback(async () => {
+    const startedAt = nowMs()
+    let status: 'ok' | 'error' = 'ok'
     const month = (budgetMonthInput.trim() || budgetMonth).slice(0, 7)
+    setRefreshScopeBusy('reference', true)
     try {
       const [
         goalsData,
@@ -514,9 +1217,15 @@ function App() {
         }),
       )
     } catch (error) {
+      status = 'error'
       setStatusMessage(`Falha ao atualizar catálogos: ${String(error)}`)
+    } finally {
+      markBootstrapStep('refresh_reference', nowMs() - startedAt, status, {
+        activeTab,
+      })
+      setRefreshScopeBusy('reference', false)
     }
-  }, [budgetMonth, budgetMonthInput])
+  }, [activeTab, budgetMonth, budgetMonthInput, markBootstrapStep, setRefreshScopeBusy])
 
   useEffect(() => {
     void refreshPrimaryData()
@@ -525,6 +1234,10 @@ function App() {
   useEffect(() => {
     void refreshReferenceData()
   }, [refreshReferenceData])
+
+  useEffect(() => {
+    void refreshImportHistoryOnly()
+  }, [refreshImportHistoryOnly])
 
   useEffect(() => {
     if (statusTone !== 'error') return
@@ -596,6 +1309,29 @@ function App() {
   }, [activeTab, markOnboardingStep])
 
   useEffect(() => {
+    if (isFirstUseWizardComplete) setShowFirstUseWizard(false)
+  }, [isFirstUseWizardComplete])
+
+  useEffect(() => {
+    if (!basePath.trim() && firstUseBasePathConfirmed) {
+      setFirstUseBasePathConfirmed(false)
+    }
+  }, [basePath, firstUseBasePathConfirmed])
+
+  useEffect(() => {
+    const firstIncompleteStep = getFirstIncompleteFirstUseWizardStep(firstUseWizardSteps)
+    if (!firstIncompleteStep) return
+
+    const activeStep = firstUseWizardSteps.find((step) => step.id === activeFirstUseWizardStep)
+    const firstIncompleteIndex = FIRST_USE_WIZARD_ORDER.indexOf(firstIncompleteStep)
+    const activeStepIndex = FIRST_USE_WIZARD_ORDER.indexOf(activeFirstUseWizardStep)
+
+    if (!activeStep || activeStep.done || activeStepIndex > firstIncompleteIndex) {
+      setActiveFirstUseWizardStep(firstIncompleteStep)
+    }
+  }, [activeFirstUseWizardStep, firstUseWizardSteps])
+
+  useEffect(() => {
     document.documentElement.dataset.gfDensity = uiPreferences.density
     document.documentElement.dataset.gfTheme = uiPreferences.theme
   }, [uiPreferences.density, uiPreferences.theme])
@@ -603,81 +1339,228 @@ function App() {
   useEffect(() => {
     let cancelled = false
     const loadSettings = async () => {
+      const startedAt = nowMs()
+      let status: 'ok' | 'error' = 'ok'
       try {
-        const [autoImport, preferences, flags, onboarding] = await Promise.all([
+        const [autoImport, preferences, flags, onboarding, passwordStatus] = await Promise.all([
           commands.settingsAutoImportGet(),
           commands.settingsUiPreferencesGet(),
           commands.settingsFeatureFlagsGet(),
           commands.settingsOnboardingGet(),
+          commands.settingsPasswordStatus(),
         ])
         if (cancelled) return
         setAutoImportEnabled(autoImport.enabled)
         setUiPreferences(preferences.preferences)
-        setFeatureFlags(flags.flags)
+        setFeatureFlags({ ...DEFAULT_FEATURE_FLAGS, ...flags.flags })
         setOnboardingState(onboarding)
+        setBtgPasswordConfigured(passwordStatus.exists)
       } catch (error) {
+        status = 'error'
         if (!cancelled) setStatusMessage(`Falha ao carregar configurações: ${String(error)}`)
       } finally {
-        if (!cancelled) setAutoImportLoaded(true)
+        if (!cancelled) {
+          setAutoImportLoaded(true)
+          markBootstrapStep('load_settings', nowMs() - startedAt, status)
+        }
       }
     }
     void loadSettings()
     return () => {
       cancelled = true
     }
+  }, [markBootstrapStep])
+
+  const clearImportJobPoll = useCallback(() => {
+    if (importJobPollTimeoutRef.current !== null) {
+      window.clearTimeout(importJobPollTimeoutRef.current)
+      importJobPollTimeoutRef.current = null
+    }
   }, [])
 
-  const handleImport = useCallback(
-    async (reprocess = false) => {
-      const normalizedBasePath = basePath.trim()
-      if (!normalizedBasePath) {
-        setStatusMessage('Informe a pasta base de importação antes de iniciar.')
-        return
+  const finalizeImportJob = useCallback(
+    async (snapshot: ImportJobStatusResponse) => {
+      clearImportJobPoll()
+      setImportJob(snapshot)
+      setImportWarnings(snapshot.warnings)
+
+      const completionMessage =
+        snapshot.status === 'error'
+          ? snapshot.errorMessage || snapshot.message || 'Falha na importação.'
+          : buildImportCompletionMessage(snapshot.result, snapshot.message)
+
+      if (snapshot.status !== 'error') {
+        setFirstUseBasePathConfirmed(true)
+        if ((snapshot.result?.filesProcessed ?? 0) > 0) {
+          markOnboardingStep('import')
+        }
       }
 
-      setLoading(true)
-      setImportWarnings([])
+      setStatusMessage(
+        snapshot.status === 'error'
+          ? `${completionMessage} Atualizando trilha de execução...`
+          : `${completionMessage} Atualizando indicadores em segundo plano...`,
+      )
+
       try {
-        const scan = await commands.importScan(normalizedBasePath)
-        const run = await commands.importRun(normalizedBasePath, reprocess)
-        setStatusMessage(
-          `Importação concluída: ${run.filesProcessed} arquivos, ${run.inserted} novas, ${run.deduped} deduplicadas.`,
-        )
-        setImportWarnings([
-          ...run.warnings,
-          ...(scan.candidates.length === 0 ? ['Nenhum arquivo candidato encontrado.'] : []),
-        ])
-        markOnboardingStep('import')
-        await Promise.all([
-          refreshDashboardOnly(),
-          refreshTransactionsOnly(),
-          refreshReviewQueueOnly(),
-          refreshProjectionIfLoaded(),
-          refreshBudgetOnly(),
-          refreshReconciliationOnly(),
-        ])
+        await refreshAfterImportJob()
+        setStatusMessage(completionMessage)
       } catch (error) {
-        setStatusMessage(`Falha na importação: ${String(error)}`)
-      } finally {
-        setLoading(false)
+        setStatusMessage(
+          snapshot.status === 'error'
+            ? `${completionMessage} Falha adicional ao atualizar painéis: ${String(error)}`
+            : `${completionMessage} Falha ao atualizar painéis: ${String(error)}`,
+        )
       }
     },
     [
-      basePath,
+      clearImportJobPoll,
       markOnboardingStep,
-      refreshBudgetOnly,
-      refreshDashboardOnly,
-      refreshProjectionIfLoaded,
-      refreshReconciliationOnly,
-      refreshReviewQueueOnly,
-      refreshTransactionsOnly,
+      refreshAfterImportJob,
+      setFirstUseBasePathConfirmed,
+    ],
+  )
+
+  const pollImportJob = useCallback(
+    (jobId: string) => {
+      clearImportJobPoll()
+
+      const tick = async () => {
+        try {
+          const snapshot = await commands.importJobStatus(jobId)
+          setImportJob(snapshot)
+          if (snapshot.status === 'queued' || snapshot.status === 'running') {
+            importJobPollTimeoutRef.current = window.setTimeout(() => {
+              void tick()
+            }, 800)
+            return
+          }
+          await finalizeImportJob(snapshot)
+        } catch (error) {
+          clearImportJobPoll()
+          setStatusMessage(`Falha ao acompanhar importação assíncrona: ${String(error)}`)
+        }
+      }
+
+      void tick()
+    },
+    [clearImportJobPoll, finalizeImportJob],
+  )
+
+  useEffect(
+    () => () => {
+      clearImportJobPoll()
+    },
+    [clearImportJobPoll],
+  )
+
+  const handleImport = useCallback(
+    async (options: { reprocess?: boolean; failedOnly?: boolean; scope?: Partial<ImportRunScope> } = {}): Promise<boolean> => {
+      const normalizedBasePath = basePath.trim()
+      if (!normalizedBasePath) {
+        setStatusMessage('Informe a pasta base de importação antes de iniciar.')
+        return false
+      }
+      if (importJobActive) {
+        setStatusMessage('Já existe uma importação em andamento. Aguarde a conclusão antes de iniciar outra.')
+        return false
+      }
+
+      const reprocess = Boolean(options.reprocess)
+      const failedOnly = Boolean(options.failedOnly)
+      const scope = options.scope ?? {}
+      const selectedSourceCount = Array.isArray(scope.sourceTypes) ? scope.sourceTypes.length : 0
+      const selectedFileCount = Array.isArray(scope.includePaths) ? scope.includePaths.length : 0
+      const kickoffMessage =
+        selectedFileCount > 0
+          ? `Reprocessando ${selectedFileCount} arquivo(s) do escopo selecionado...`
+          : selectedSourceCount > 0 && failedOnly
+            ? `Reprocessando falhas de ${selectedSourceCount} fonte(s)...`
+            : selectedSourceCount > 0
+              ? `Reprocessando ${selectedSourceCount} fonte(s) selecionada(s)...`
+              : failedOnly
+                ? 'Reprocessando apenas arquivos com falha...'
+                : reprocess
+                  ? 'Reprocessando arquivos importados...'
+                  : 'Importando arquivos financeiros...'
+
+      return withBlockingTask(async () => {
+        clearImportJobPoll()
+        setImportWarnings([])
+        setImportJob(null)
+        setStatusMessage(kickoffMessage)
+        await new Promise((resolve) => window.setTimeout(resolve, 0))
+
+        const scan = await commands.importScan(normalizedBasePath)
+        const hasBtgCardCandidates = scan.candidates.some(
+          (candidate) => candidate.sourceType === 'btg_card_encrypted_xlsx',
+        )
+        if (hasBtgCardCandidates) {
+          const passwordStatus = await commands.settingsPasswordStatus()
+          setBtgPasswordConfigured(passwordStatus.exists)
+          if (!passwordStatus.exists) {
+            setStatusMessage(
+              'Cadastre a senha BTG em Configurações > Segurança antes de importar arquivos de cartão BTG.',
+            )
+            setImportWarnings([
+              'Arquivos BTG de cartão exigem senha cadastrada.',
+              'Abra Configurações > Segurança, salve a senha e tente novamente.',
+            ])
+            handleTabChange('settings')
+            return false
+          }
+        }
+
+        if (featureFlags.v2AsyncJobsEnabled) {
+          const job = await commands.importJobStart(normalizedBasePath, reprocess, failedOnly, scope)
+          setImportJob(job)
+          setStatusMessage(job.message)
+          pollImportJob(job.jobId)
+          return true
+        }
+
+        const run = await commands.importRun(normalizedBasePath, reprocess, failedOnly, scope)
+        const combinedWarnings = [
+          ...run.warnings,
+          ...(scan.candidates.length === 0 ? ['Nenhum arquivo candidato encontrado.'] : []),
+        ]
+        setImportWarnings(combinedWarnings)
+        const completionMessage = buildImportCompletionMessage(run, kickoffMessage)
+        setFirstUseBasePathConfirmed(true)
+        if (run.filesProcessed > 0) {
+          markOnboardingStep('import')
+        }
+        setStatusMessage(`${completionMessage} Atualizando indicadores em segundo plano...`)
+        try {
+          await refreshAfterImportJob()
+          setStatusMessage(completionMessage)
+        } catch (error) {
+          setStatusMessage(`${completionMessage} Falha ao atualizar painéis: ${String(error)}`)
+        }
+        return true
+      }).catch((error) => {
+        setStatusMessage(`Falha na importação: ${String(error)}`)
+        return false
+      })
+    },
+    [
+      basePath,
+      clearImportJobPoll,
+      featureFlags.v2AsyncJobsEnabled,
+      handleTabChange,
+      importJobActive,
+      markOnboardingStep,
+      pollImportJob,
+      refreshAfterImportJob,
+      setFirstUseBasePathConfirmed,
+      withBlockingTask,
     ],
   )
 
   useEffect(() => {
     if (!autoImportLoaded || didAutoImport.current) return
     didAutoImport.current = true
-    if (autoImportEnabled) void handleImport(false)
+    if (autoImportEnabled) void handleImport({ reprocess: false })
   }, [autoImportEnabled, autoImportLoaded, handleImport])
 
   const handleUpdateCategory = async (tx: TransactionItem, categoryId: string, subcategoryId: string) => {
@@ -720,13 +1603,7 @@ function App() {
     try {
       await commands.transactionsUpdateCategory([tx.id], categoryId, subcategoryId)
       if (categoryId) markOnboardingStep('categorize')
-      void Promise.all([
-        refreshTransactionsOnly(),
-        refreshReviewQueueOnly(),
-        refreshDashboardOnly(),
-        refreshBudgetOnly(),
-        refreshReconciliationOnly(),
-      ])
+      void refreshAfterTransactionMutation()
     } catch (error) {
       setTransactions(previousSnapshot)
       setReviewQueue(previousReviewSnapshot)
@@ -734,21 +1611,27 @@ function App() {
     }
   }
 
-  const handleSavePassword = async () => {
+  const handleSavePassword = useCallback(async (): Promise<boolean> => {
     if (!btgPasswordInput.trim()) {
       setStatusMessage('Informe a senha BTG antes de salvar.')
-      return
+      return false
     }
     try {
-      await commands.settingsPasswordSet(btgPasswordInput)
-      setStatusMessage('Senha BTG salva no Credential Manager.')
-      setBtgPasswordInput('')
-      setPasswordTestMessage('')
-      setPasswordTestOk(null)
+      await withBlockingTask(async () => {
+        await commands.settingsPasswordSet(btgPasswordInput)
+        if (basePath.trim()) setFirstUseBasePathConfirmed(true)
+        setBtgPasswordConfigured(true)
+        setStatusMessage('Senha BTG salva no Credential Manager.')
+        setBtgPasswordInput('')
+        setPasswordTestMessage('')
+        setPasswordTestOk(null)
+      })
+      return true
     } catch (error) {
       setStatusMessage(`Falha ao salvar senha: ${String(error)}`)
+      return false
     }
-  }
+  }, [basePath, btgPasswordInput, withBlockingTask])
 
   const handleToggleAutoImport = async (enabled: boolean) => {
     const previous = autoImportEnabled
@@ -762,16 +1645,145 @@ function App() {
     }
   }
 
-  const handleTestPassword = async () => {
+  const handleTestPassword = useCallback(async (): Promise<boolean> => {
     try {
-      const result = await commands.settingsPasswordTest()
-      setPasswordTestOk(result.ok)
-      setPasswordTestMessage(result.message)
+      const result = await withBlockingTask(async () => {
+        const passwordResult = await commands.settingsPasswordTest()
+        const status = await commands.settingsPasswordStatus()
+        if (status.exists && basePath.trim()) setFirstUseBasePathConfirmed(true)
+        setBtgPasswordConfigured(status.exists)
+        setPasswordTestOk(passwordResult.ok)
+        setPasswordTestMessage(passwordResult.message)
+        return passwordResult
+      })
+      return result.ok
     } catch (error) {
       setPasswordTestOk(false)
       setPasswordTestMessage(`Falha no teste de senha: ${String(error)}`)
+      return false
     }
-  }
+  }, [basePath, withBlockingTask])
+
+  const handleConfirmFirstUseBasePath = useCallback(() => {
+    if (!basePath.trim()) {
+      setStatusMessage('Informe a pasta base antes de continuar.')
+      return false
+    }
+
+    setFirstUseBasePathConfirmed(true)
+    setStatusMessage('Pasta base confirmada. Próximo passo: salvar a senha BTG.')
+    return true
+  }, [basePath])
+
+  const handleFirstUseBasePathChange = useCallback(
+    (value: string) => {
+      setBasePath(value)
+      if (firstUseBasePathConfirmed) setFirstUseBasePathConfirmed(false)
+    },
+    [firstUseBasePathConfirmed],
+  )
+
+  const handleFirstUseWizardActiveStepChange = useCallback(
+    (stepId: SetupStepId) => {
+      const targetIndex = FIRST_USE_WIZARD_ORDER.indexOf(stepId)
+      if (targetIndex < 0) return
+
+      const hasBlockingPreviousStep = firstUseWizardSteps
+        .slice(0, targetIndex)
+        .some((step) => !step.done)
+
+      if (hasBlockingPreviousStep) return
+      setActiveFirstUseWizardStep(stepId)
+    },
+    [firstUseWizardSteps],
+  )
+
+  const reopenFirstUseWizard = useCallback(() => {
+    const firstIncompleteStep = getFirstIncompleteFirstUseWizardStep(firstUseWizardSteps)
+    handleTabChange('dashboard')
+    if (firstIncompleteStep) setActiveFirstUseWizardStep(firstIncompleteStep)
+    setShowFirstUseWizard(true)
+  }, [firstUseWizardSteps, handleTabChange])
+
+  const firstUseSetupJourneyCard = useMemo<FirstUseJourneyCardProps | null>(() => {
+    if (!featureFlags.onboardingEnabled || isFirstUseWizardComplete) return null
+
+    return {
+      title: 'Setup inicial pendente',
+      description:
+        'Continue a configuração mínima do app antes de depender do fluxo completo de importação.',
+      completedCount: firstUseWizardCompletedCount,
+      totalCount: firstUseWizardSteps.length,
+      steps: firstUseWizardSteps.map((step) => ({
+        id: step.id,
+        title: step.title,
+        done: step.done,
+      })),
+      nextStepTitle: firstIncompleteSetupStep?.title ?? null,
+      primaryAction: {
+        label: 'Retomar setup inicial',
+        onClick: reopenFirstUseWizard,
+      },
+      secondaryAction: {
+        label: nextSetupSettingsSection === 'security' ? 'Abrir segurança' : 'Abrir importação',
+        onClick: () => openSettingsSection(nextSetupSettingsSection),
+        tone: 'ghost',
+      },
+    }
+  }, [
+    featureFlags.onboardingEnabled,
+    firstIncompleteSetupStep?.title,
+    firstUseWizardCompletedCount,
+    firstUseWizardSteps,
+    isFirstUseWizardComplete,
+    nextSetupSettingsSection,
+    openSettingsSection,
+    reopenFirstUseWizard,
+  ])
+
+  const onboardingJourneyCard = useMemo<FirstUseJourneyCardProps | null>(() => {
+    if (!featureFlags.onboardingEnabled || !isFirstUseWizardComplete || onboardingState.completed) return null
+
+    return {
+      title: 'Onboarding guiado em aberto',
+      description:
+        'Retome os primeiros passos do produto para validar revisão, dashboard e projeções com o fluxo orientado.',
+      completedCount: onboardingCompletedCount,
+      totalCount: onboardingJourneySteps.length,
+      steps: onboardingJourneySteps,
+      nextStepTitle: firstIncompleteOnboardingStep?.title.replace(/^\d+\.\s*/, '') ?? null,
+      primaryAction: {
+        label: 'Retomar onboarding',
+        onClick: resumeOnboardingJourney,
+      },
+    }
+  }, [
+    featureFlags.onboardingEnabled,
+    firstIncompleteOnboardingStep,
+    isFirstUseWizardComplete,
+    onboardingCompletedCount,
+    onboardingJourneySteps,
+    onboardingState.completed,
+    resumeOnboardingJourney,
+  ])
+
+  const dashboardJourneyCard = useMemo<FirstUseJourneyCardProps | null>(() => {
+    if (!featureFlags.onboardingEnabled) return null
+    if (!shouldShowFirstUseWizard && firstUseSetupJourneyCard) return firstUseSetupJourneyCard
+    if (!showOnboarding && onboardingJourneyCard) return onboardingJourneyCard
+    return null
+  }, [
+    featureFlags.onboardingEnabled,
+    firstUseSetupJourneyCard,
+    onboardingJourneyCard,
+    shouldShowFirstUseWizard,
+    showOnboarding,
+  ])
+
+  const settingsJourneyCard = useMemo<FirstUseJourneyCardProps | null>(() => {
+    if (!featureFlags.onboardingEnabled) return null
+    return firstUseSetupJourneyCard ?? onboardingJourneyCard
+  }, [featureFlags.onboardingEnabled, firstUseSetupJourneyCard, onboardingJourneyCard])
 
   const handleSaveGoal = async (event: FormEvent) => {
     event.preventDefault()
@@ -853,17 +1865,16 @@ function App() {
   }
 
   const handleRunProjection = async (scenario: ProjectionScenario) => {
-    setLoading(true)
     try {
-      const data = await commands.projectionRun({ scenario, monthsAhead: 24 })
-      setProjection(data)
-      setProjectionScenario(scenario)
-      markOnboardingStep('projection')
-      setStatusMessage(`Projeção ${scenario} gerada.`)
+      await withBlockingTask(async () => {
+        const data = await commands.projectionRun({ scenario, monthsAhead: 24 })
+        setProjection(data)
+        setProjectionScenario(scenario)
+        markOnboardingStep('projection')
+        setStatusMessage(`Projeção ${scenario} gerada.`)
+      })
     } catch (error) {
       setStatusMessage(`Erro na projeção: ${String(error)}`)
-    } finally {
-      setLoading(false)
     }
   }
 
@@ -886,14 +1897,7 @@ function App() {
       setManualDescription('')
       setManualAmount('')
       setManualSubcategory('')
-      await Promise.all([
-        refreshDashboardOnly(),
-        refreshTransactionsOnly(),
-        refreshReviewQueueOnly(),
-        refreshProjectionIfLoaded(),
-        refreshBudgetOnly(),
-        refreshReconciliationOnly(),
-      ])
+      await refreshAfterTransactionMutation()
       setStatusMessage('Lançamento extraordinário registrado.')
     } catch (error) {
       setStatusMessage(`Erro ao salvar lançamento: ${String(error)}`)
@@ -1020,13 +2024,7 @@ function App() {
       await commands.categoriesUpsert({ name: newCategoryName.trim(), color: newCategoryColor })
       setNewCategoryName('')
       setNewCategoryColor(DEFAULT_CATEGORY_COLOR)
-      await Promise.all([
-        refreshCategoriesOnly(),
-        refreshTransactionsOnly(),
-        refreshDashboardOnly(),
-        refreshRulesOnly(),
-        refreshBudgetOnly(),
-      ])
+      await refreshAfterCategoryCatalogChange()
       setStatusMessage('Categoria criada com sucesso.')
     } catch (error) {
       setStatusMessage(`Erro ao criar categoria: ${String(error)}`)
@@ -1041,13 +2039,7 @@ function App() {
     }
     try {
       await commands.categoriesUpsert({ id: categoryId, name: draft.name.trim(), color: draft.color })
-      await Promise.all([
-        refreshCategoriesOnly(),
-        refreshTransactionsOnly(),
-        refreshDashboardOnly(),
-        refreshRulesOnly(),
-        refreshBudgetOnly(),
-      ])
+      await refreshAfterCategoryCatalogChange()
       setStatusMessage('Categoria atualizada com sucesso.')
     } catch (error) {
       setStatusMessage(`Erro ao atualizar categoria: ${String(error)}`)
@@ -1066,12 +2058,7 @@ function App() {
         name: newSubcategoryName.trim(),
       })
       setNewSubcategoryName('')
-      await Promise.all([
-        refreshCategoriesOnly(),
-        refreshTransactionsOnly(),
-        refreshRulesOnly(),
-        refreshBudgetOnly(),
-      ])
+      await refreshAfterCategoryCatalogChange()
       setStatusMessage('Subcategoria criada com sucesso.')
     } catch (error) {
       setStatusMessage(`Erro ao criar subcategoria: ${String(error)}`)
@@ -1090,12 +2077,7 @@ function App() {
         categoryId: draft.categoryId,
         name: draft.name.trim(),
       })
-      await Promise.all([
-        refreshCategoriesOnly(),
-        refreshTransactionsOnly(),
-        refreshRulesOnly(),
-        refreshBudgetOnly(),
-      ])
+      await refreshAfterCategoryCatalogChange()
       setStatusMessage('Subcategoria atualizada com sucesso.')
     } catch (error) {
       setStatusMessage(`Erro ao atualizar subcategoria: ${String(error)}`)
@@ -1136,37 +2118,28 @@ function App() {
   }
 
   const handleRuleDryRun = async () => {
-    setLoading(true)
     try {
-      const response = await commands.rulesDryRun(12)
-      setRulesDryRun(response)
-      setStatusMessage(`Dry-run concluído: ${response.matchedCount} transações elegíveis.`)
+      await withBlockingTask(async () => {
+        const response = await commands.rulesDryRun(12)
+        setRulesDryRun(response)
+        setStatusMessage(`Dry-run concluído: ${response.matchedCount} transações elegíveis.`)
+      })
     } catch (error) {
       setStatusMessage(`Erro no dry-run de regras: ${String(error)}`)
-    } finally {
-      setLoading(false)
     }
   }
 
   const handleRuleApplyBatch = async () => {
-    setLoading(true)
     try {
-      const response = await commands.rulesApplyBatch()
-      await Promise.all([
-        refreshTransactionsOnly(),
-        refreshReviewQueueOnly(),
-        refreshDashboardOnly(),
-        refreshRulesOnly(),
-        refreshBudgetOnly(),
-        refreshReconciliationOnly(),
-      ])
-      setRulesDryRun(null)
-      if (response.updated > 0) markOnboardingStep('categorize')
-      setStatusMessage(`Aplicação em lote concluída: ${response.updated} transações categorizadas.`)
+      await withBlockingTask(async () => {
+        const response = await commands.rulesApplyBatch()
+        await Promise.all([refreshAfterTransactionMutation(), refreshRulesOnly()])
+        setRulesDryRun(null)
+        if (response.updated > 0) markOnboardingStep('categorize')
+        setStatusMessage(`Aplicação em lote concluída: ${response.updated} transações categorizadas.`)
+      })
     } catch (error) {
       setStatusMessage(`Erro ao aplicar regras em lote: ${String(error)}`)
-    } finally {
-      setLoading(false)
     }
   }
 
@@ -1200,11 +2173,14 @@ function App() {
     },
     transactions,
     reviewQueue,
+    hasImportedFinancialData,
     categoryOptions,
     subcategoriesByCategory,
     flowLabel,
     onUpdateCategory: (tx: TransactionItem, categoryId: string, subcategoryId: string) =>
       void handleUpdateCategory(tx, categoryId, subcategoryId),
+    onOpenFirstUseSetup: reopenFirstUseWizard,
+    onOpenImportSettings: () => openSettingsSection('import'),
   }
 
   const sharedPlanningProps = {
@@ -1274,18 +2250,35 @@ function App() {
     onRunProjection: (scenario: ProjectionScenario) => void handleRunProjection(scenario),
     categoryOptions,
     subcategoriesByCategory,
+    hasImportedFinancialData,
+    onOpenFirstUseSetup: reopenFirstUseWizard,
     sectionHint: planningSectionHint,
   }
 
   const sharedSettingsProps = {
     loading,
+    importJob,
+    importBusy: importJobActive,
     basePath,
     onBasePathChange: setBasePath,
     autoImportEnabled,
     autoImportLoaded,
     onToggleAutoImport: (enabled: boolean) => void handleToggleAutoImport(enabled),
-    onImport: (reprocess: boolean) => void handleImport(reprocess),
+    onImport: (reprocess: boolean) => void handleImport({ reprocess }),
+    onImportFailedOnly: () => void handleImport({ reprocess: true, failedOnly: true }),
+    onImportSelective: (options: { failedOnly?: boolean; sourceTypes?: string[]; includePaths?: string[] }) =>
+      void handleImport({
+        reprocess: true,
+        failedOnly: Boolean(options.failedOnly),
+        scope: {
+          sourceTypes: options.sourceTypes ?? [],
+          includePaths: options.includePaths ?? [],
+        },
+      }),
     importWarnings,
+    importHistory,
+    onRefreshImportHistory: () => void refreshImportHistoryOnly(),
+    btgPasswordConfigured,
     btgPasswordInput,
     onBtgPasswordInputChange: setBtgPasswordInput,
     onSavePassword: () => void handleSavePassword(),
@@ -1331,24 +2324,38 @@ function App() {
     onRuleApplyBatch: () => handleRuleApplyBatch(),
     errorTrail,
     onRefreshErrorTrail: () => void refreshErrorTrailOnly(),
+    firstUseJourneyCard: settingsJourneyCard,
   }
 
   const renderActiveTab = () => {
     if (activeTab === 'dashboard') {
       if (!featureFlags.newDashboardEnabled) {
-        return <LegacyDashboardTab dashboard={dashboard} uncategorizedCount={uncategorizedCount} transactions={transactions.items} />
+        return (
+          <LegacyDashboardTab
+            dashboard={dashboard}
+            uncategorizedCount={uncategorizedCount}
+            transactions={transactions.items}
+            firstUseJourneyCard={dashboardJourneyCard}
+            onBootstrapSegmentVisible={markInitShellSegment}
+          />
+        )
       }
       return (
         <DashboardTab
           dashboard={dashboard}
           uncategorizedCount={uncategorizedCount}
           transactions={transactions.items}
+          hasImportedFinancialData={hasImportedFinancialData}
+          firstUseJourneyCard={dashboardJourneyCard}
           reconciliation={reconciliation}
           monthlyBudgetSummary={monthlyBudgetSummary}
+          onOpenFirstUseSetup={reopenFirstUseWizard}
+          onOpenImportSettings={() => openSettingsSection('import')}
           onOpenBudgetPlanner={() => openPlanningSection('budget')}
           onOpenTransactions={openTransactionsReview}
           onOpenTransactionsByAccount={openTransactionsReviewByAccount}
           onAddManualSnapshot={handleAddManualBalanceSnapshot}
+          onBootstrapSegmentVisible={markInitShellSegment}
           chartsEnabled={uiPreferences.chartsEnabled}
           mode={uiPreferences.mode}
         />
@@ -1356,35 +2363,133 @@ function App() {
     }
 
     if (activeTab === 'transactions') {
-      if (!featureFlags.newTransactionsEnabled) return <LegacyTransactionsTab {...sharedTransactionsProps} />
-      return <TransactionsTab {...sharedTransactionsProps} mode={uiPreferences.mode} />
+      if (!featureFlags.newTransactionsEnabled) {
+        return (
+          <TabFirstVisibleSignal tabId="transactions" onVisible={markSecondaryTabVisible}>
+            <LazyLegacyTransactionsTab {...sharedTransactionsProps} />
+          </TabFirstVisibleSignal>
+        )
+      }
+      return (
+        <TabFirstVisibleSignal tabId="transactions" onVisible={markSecondaryTabVisible}>
+          <LazyTransactionsTab {...sharedTransactionsProps} mode={uiPreferences.mode} />
+        </TabFirstVisibleSignal>
+      )
     }
 
     if (activeTab === 'planning') {
-      if (!featureFlags.newPlanningEnabled) return <LegacyPlanningTab {...sharedPlanningProps} />
-      return <PlanningTab {...sharedPlanningProps} mode={uiPreferences.mode} />
+      if (!featureFlags.newPlanningEnabled) {
+        return (
+          <TabFirstVisibleSignal tabId="planning" onVisible={markSecondaryTabVisible}>
+            <LazyLegacyPlanningTab {...sharedPlanningProps} />
+          </TabFirstVisibleSignal>
+        )
+      }
+      return (
+        <TabFirstVisibleSignal tabId="planning" onVisible={markSecondaryTabVisible}>
+          <LazyPlanningTab {...sharedPlanningProps} mode={uiPreferences.mode} />
+        </TabFirstVisibleSignal>
+      )
     }
 
-    if (!featureFlags.newSettingsEnabled) return <LegacySettingsTab {...sharedSettingsProps} />
+    if (!featureFlags.newSettingsEnabled) {
+      return (
+        <TabFirstVisibleSignal tabId="settings" onVisible={markSecondaryTabVisible}>
+          <LazyLegacySettingsTab {...sharedSettingsProps} />
+        </TabFirstVisibleSignal>
+      )
+    }
     return (
-      <SettingsTab
-        {...sharedSettingsProps}
-        preferences={uiPreferences}
-        onPreferencesChange={(next) => void saveUiPreferences(next)}
-        featureFlags={featureFlags}
-        onFeatureFlagsChange={(next) => void saveFeatureFlags(next)}
-        onboardingState={onboardingState}
-        onResetOnboarding={() => {
-          setShowOnboarding(true)
-          persistOnboarding(DEFAULT_ONBOARDING_STATE)
-        }}
-        onCompleteOnboarding={() => {
-          setShowOnboarding(false)
-          persistOnboarding({ completed: true, stepsCompleted: ONBOARDING_STEPS })
-        }}
-      />
+      <TabFirstVisibleSignal tabId="settings" onVisible={markSecondaryTabVisible}>
+        <LazySettingsTab
+          key={`settings-${settingsSectionHint ?? 'default'}`}
+          {...sharedSettingsProps}
+          sectionHint={settingsSectionHint}
+          preferences={uiPreferences}
+          onPreferencesChange={(next) => void saveUiPreferences(next)}
+          featureFlags={featureFlags}
+          onFeatureFlagsChange={(next) => void saveFeatureFlags(next)}
+          onboardingState={onboardingState}
+          onResetOnboarding={() => {
+            setShowOnboarding(true)
+            persistOnboarding(DEFAULT_ONBOARDING_STATE)
+          }}
+          onCompleteOnboarding={() => {
+            setShowOnboarding(false)
+            persistOnboarding({ completed: true, stepsCompleted: ONBOARDING_STEPS })
+          }}
+        />
+      </TabFirstVisibleSignal>
     )
   }
+
+  const activeTabLabel = TABS.find((tab) => tab.id === activeTab)?.label ?? 'Modulo'
+  const footerBusy = loading || importJobActive || isBackgroundRefreshActive
+  const footerStatusMessage = importJobActive
+    ? importJob?.message ?? statusMessage
+    : refreshState.import_finalize
+      ? 'Atualizando indicadores após a importação...'
+      : refreshState.primary
+        ? 'Atualizando painel principal...'
+        : refreshState.reference
+          ? 'Atualizando catálogos e referências...'
+          : statusMessage
+  const backgroundActivities = useMemo<AppShellActivity[]>(() => {
+    const activities: AppShellActivity[] = []
+    if (importJobActive && importJob) {
+      activities.push({
+        id: 'import-job',
+        label: `Importação: ${importJob.message}`,
+        tone: 'gf-pill-warning',
+      })
+    }
+    if (refreshState.import_finalize) {
+      activities.push({
+        id: 'refresh-import-finalize',
+        label: 'Pós-importação: consolidando indicadores',
+        tone: 'gf-pill-warning',
+      })
+    }
+    if (refreshState.primary) {
+      activities.push({
+        id: 'refresh-primary',
+        label: 'Atualizando painel principal',
+        tone: 'gf-pill-warning',
+      })
+    }
+    if (refreshState.reference) {
+      activities.push({
+        id: 'refresh-reference',
+        label: 'Atualizando catálogos e referências',
+        tone: 'gf-pill-warning',
+      })
+    }
+    return activities
+  }, [importJob, importJobActive, refreshState.import_finalize, refreshState.primary, refreshState.reference])
+  const tabLoadingFallback = featureFlags.newLayoutEnabled ? (
+    <section className="gf-card" aria-live="polite">
+      <header className="gf-section-header">
+        <div>
+          <h3>Carregando {activeTabLabel}</h3>
+          <p>Preparando modulo sob demanda.</p>
+        </div>
+      </header>
+      <div className="gf-empty">
+        <p>Carregando conteudo.</p>
+      </div>
+    </section>
+  ) : (
+    <section className="panel" aria-live="polite">
+      <h2>Carregando {activeTabLabel}</h2>
+      <p>Preparando modulo sob demanda.</p>
+    </section>
+  )
+  const activeTabContent =
+    activeTab === 'dashboard' ? (
+      renderActiveTab()
+    ) : (
+      <Suspense fallback={tabLoadingFallback}>{renderActiveTab()}</Suspense>
+    )
 
   if (!featureFlags.newLayoutEnabled) {
     return (
@@ -1396,7 +2501,7 @@ function App() {
             <p className="subtitle">Layout legado ativo por feature flag.</p>
           </div>
           <div className="hero-stack">
-            <span className={`hero-status ${loading ? 'busy' : 'ready'}`}>{loading ? 'Processando' : 'Pronto'}</span>
+            <span className={`hero-status ${footerBusy ? 'busy' : 'ready'}`}>{footerBusy ? 'Processando' : 'Pronto'}</span>
           </div>
         </header>
 
@@ -1405,7 +2510,7 @@ function App() {
             <button
               key={tab.id}
               className={activeTab === tab.id ? 'tab active' : 'tab'}
-              onClick={() => setActiveTab(tab.id)}
+              onClick={() => handleTabChange(tab.id)}
               type="button"
             >
               {tab.label}
@@ -1433,11 +2538,11 @@ function App() {
           </div>
         </section>
 
-        {renderActiveTab()}
+        {activeTabContent}
 
         <footer className="status-bar">
-          <span className={`status-pill ${statusTone}`}>{loading ? 'Processando...' : 'Pronto'}</span>
-          <span className="status-text">{statusMessage}</span>
+          <span className={`status-pill ${statusTone}`}>{footerBusy ? 'Processando...' : 'Pronto'}</span>
+          <span className="status-text">{footerStatusMessage}</span>
         </footer>
       </main>
     )
@@ -1448,7 +2553,7 @@ function App() {
       <AppShell
         tabs={TABS}
         activeTab={activeTab}
-        onTabChange={setActiveTab}
+        onTabChange={handleTabChange}
         periodStart={periodStart}
         periodEnd={periodEnd}
         onPeriodStartChange={setPeriodStart}
@@ -1459,16 +2564,18 @@ function App() {
         onModeChange={(mode) => void saveUiPreferences({ ...uiPreferences, mode })}
         globalSearch={globalSearch}
         onGlobalSearchChange={setGlobalSearch}
-        loading={loading}
-        statusMessage={statusMessage}
+        backgroundActivities={backgroundActivities}
+        loading={footerBusy}
+        statusMessage={footerStatusMessage}
+        onBootstrapSegmentVisible={markInitShellSegment}
         sidebarPanel={
-          featureFlags.onboardingEnabled && !onboardingState.completed && showOnboarding ? (
+          !shouldShowFirstUseWizard && featureFlags.onboardingEnabled && !onboardingState.completed && showOnboarding ? (
             <OnboardingGuide
               state={onboardingState}
               compact
               onSkip={() => setShowOnboarding(false)}
               onClose={() => setShowOnboarding(false)}
-              onGoToTab={(tab) => setActiveTab(tab)}
+              onGoToTab={(tab) => handleTabChange(tab)}
             />
           ) : undefined
         }
@@ -1483,17 +2590,78 @@ function App() {
                 Mostrar onboarding
               </button>
             )}
-            <button type="button" className="gf-button" disabled={loading} onClick={() => void handleImport(false)}>
-              Importar
-            </button>
-            <button type="button" className="gf-button secondary" disabled={loading} onClick={() => void handleImport(true)}>
-              Reprocessar
-            </button>
-            <p className="gf-muted">Pendências: {uncategorizedCount}</p>
+            {!showFirstUseWizard && !isFirstUseWizardComplete && (
+              <button
+                type="button"
+                className="gf-button ghost"
+                onClick={reopenFirstUseWizard}
+              >
+                Mostrar setup inicial
+              </button>
+            )}
+            <div className="gf-sidebar-quick">
+              <p className="gf-sidebar-quick-title">Ações rápidas</p>
+              <div className="gf-sidebar-quick-grid">
+                <button
+                  type="button"
+                  className="gf-button"
+                  disabled={loading || importJobActive}
+                  onClick={() => void handleImport({ reprocess: false })}
+                >
+                  Importar
+                </button>
+                <button
+                  type="button"
+                  className="gf-button secondary"
+                  disabled={loading || importJobActive}
+                  onClick={() => void handleImport({ reprocess: true, failedOnly: true })}
+                >
+                  Reprocessar falhas
+                </button>
+                <button
+                  type="button"
+                  className="gf-button ghost"
+                  disabled={loading || importJobActive}
+                  onClick={() => void handleImport({ reprocess: true })}
+                >
+                  Reprocessar tudo
+                </button>
+              </div>
+              <p className="gf-muted">Pendências: {uncategorizedCount}</p>
+            </div>
           </>
         }
       >
-        {renderActiveTab()}
+        {shouldShowFirstUseWizard && (
+          <FirstUseWizard
+            steps={firstUseWizardSteps}
+            activeStepId={activeFirstUseWizardStep}
+            onActiveStepChange={handleFirstUseWizardActiveStepChange}
+            basePath={basePath}
+            onBasePathChange={handleFirstUseBasePathChange}
+            btgPasswordInput={btgPasswordInput}
+            onBtgPasswordInputChange={setBtgPasswordInput}
+            btgPasswordConfigured={btgPasswordConfigured}
+            passwordTestOk={passwordTestOk}
+            passwordTestMessage={passwordTestMessage}
+            importWarnings={importWarnings}
+            loading={loading || importJobActive}
+            importJob={importJob}
+            onConfirmBasePath={handleConfirmFirstUseBasePath}
+            onSavePassword={() => {
+              void handleSavePassword()
+            }}
+            onTestPassword={() => {
+              void handleTestPassword()
+            }}
+            onImport={() => {
+              void handleImport({ reprocess: false })
+            }}
+            onOpenSettings={openSettingsSection}
+            onDismiss={() => setShowFirstUseWizard(false)}
+          />
+        )}
+        {activeTabContent}
       </AppShell>
     </>
   )

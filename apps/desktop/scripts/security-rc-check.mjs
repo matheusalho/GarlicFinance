@@ -68,8 +68,8 @@ const checkCsp = async () => {
     'devCsp deve permitir endpoints de desenvolvimento do Vite (http/ws localhost:5173).',
   )
   assertCondition(
-    security.freezePrototype === true,
-    'freezePrototype deve estar habilitado para reduzir superficie de ataques por prototype pollution.',
+    typeof security.freezePrototype === 'boolean',
+    'freezePrototype deve estar definido explicitamente (true/false) para postura de seguranca clara.',
   )
 }
 

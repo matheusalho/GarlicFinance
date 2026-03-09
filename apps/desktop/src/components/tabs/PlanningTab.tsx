@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { FormEvent } from 'react'
 
+import { GuidedEmptyState } from '../common/GuidedEmptyState'
 import { brl } from '../../lib/format'
 import type {
   GoalListItem,
@@ -95,6 +96,8 @@ interface PlanningTabProps {
   onRunProjection: (scenario: ProjectionScenario) => void
   categoryOptions: CategoryOption[]
   subcategoriesByCategory: Record<string, SubcategoryItem[]>
+  hasImportedFinancialData: boolean
+  onOpenFirstUseSetup?: () => void
   mode: 'simple' | 'advanced'
   sectionHint?: PlanningSection
 }
@@ -161,10 +164,17 @@ export function PlanningTab({
   onRunProjection,
   categoryOptions,
   subcategoriesByCategory,
+  hasImportedFinancialData,
+  onOpenFirstUseSetup,
   mode,
   sectionHint,
 }: PlanningTabProps) {
   const [activeSection, setActiveSection] = useState<PlanningSection>(sectionHint ?? 'extra')
+  const hasPlanningData =
+    recurringTemplates.length > 0 ||
+    goals.length > 0 ||
+    (monthlyBudgetSummary?.items.length ?? 0) > 0 ||
+    (projection?.monthlyProjection.length ?? 0) > 0
 
   return (
     <div className="gf-stack">
@@ -194,6 +204,30 @@ export function PlanningTab({
           </button>
         </div>
       </section>
+
+      {!hasPlanningData && !hasImportedFinancialData && (
+        <section className="gf-card">
+          <header className="gf-section-header">
+            <div>
+              <h3>Planejamento pronto para começar</h3>
+              <p>Você pode importar seus dados primeiro ou começar com lançamentos e metas manuais.</p>
+            </div>
+          </header>
+          <GuidedEmptyState
+            title="Ainda não há histórico suficiente para projeções e metas."
+            description="Abra o setup inicial para importar dados reais ou siga em frente com lançamentos extraordinários e objetivos manuais."
+            primaryAction={{
+              label: 'Abrir setup inicial',
+              onClick: () => onOpenFirstUseSetup?.(),
+            }}
+            secondaryAction={{
+              label: 'Lançar manualmente',
+              onClick: () => setActiveSection('extra'),
+              tone: 'ghost',
+            }}
+          />
+        </section>
+      )}
 
       {activeSection === 'extra' && (
         <section className="gf-card">

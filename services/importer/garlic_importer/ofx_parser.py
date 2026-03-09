@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 from typing import TypedDict
 
-from .utils import normalize_space
+from .utils import _decode_binary_text, normalize_space
 
 
 class RawOfxTransaction(TypedDict):
@@ -33,7 +33,14 @@ def detect_ofx_encoding(binary: bytes) -> str:
 def parse_ofx_file(file_path: Path) -> list[RawOfxTransaction]:
     binary = file_path.read_bytes()
     encoding = detect_ofx_encoding(binary)
-    text = binary.decode(encoding, errors="replace")
+    try:
+        preferred = binary.decode(encoding, errors="replace")
+    except LookupError:
+        preferred = binary.decode("utf-8", errors="replace")
+
+    # Some OFX files advertise inconsistent headers; choose the cleanest decoding.
+    fallback = _decode_binary_text(binary)
+    text = fallback if fallback.count("�") < preferred.count("�") else preferred
 
     transactions: list[RawOfxTransaction] = []
     blocks = re.findall(r"<STMTTRN>(.*?)</STMTTRN>", text, flags=re.IGNORECASE | re.DOTALL)
@@ -55,4 +62,3 @@ def parse_ofx_file(file_path: Path) -> list[RawOfxTransaction]:
 def _extract_tag(block: str, tag_name: str) -> str:
     match = re.search(fr"<{tag_name}>([^<\r\n]+)", block, flags=re.IGNORECASE)
     return normalize_space(match.group(1) if match else "")
-

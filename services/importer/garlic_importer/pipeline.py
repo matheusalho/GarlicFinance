@@ -66,8 +66,25 @@ def scan_candidates(base_path: Path) -> list[dict[str, Any]]:
     return candidates
 
 
-def parse_all(base_path: Path, btg_password: str = "") -> dict[str, Any]:
+def _normalize_include_path(raw_path: str) -> str:
+    return str(Path(raw_path).resolve())
+
+
+def parse_all(
+    base_path: Path,
+    btg_password: str = "",
+    include_paths: list[str] | None = None,
+) -> dict[str, Any]:
     candidates = scan_candidates(base_path)
+    if include_paths:
+        include_set = {
+            _normalize_include_path(path)
+            for path in include_paths
+            if str(path).strip()
+        }
+        if include_set:
+            candidates = [candidate for candidate in candidates if candidate["path"] in include_set]
+
     source_files: list[dict[str, Any]] = []
     transactions: list[dict[str, Any]] = []
     warnings: list[str] = []

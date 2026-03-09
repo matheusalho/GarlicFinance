@@ -1,12 +1,20 @@
-﻿import type { ReactNode } from 'react'
+import { useRef } from 'react'
+import type { ReactNode } from 'react'
 
 type BasisMode = 'purchase' | 'cashflow'
 type UiMode = 'simple' | 'advanced'
+type InitShellSegmentId = 'layout_base' | 'sidebar' | 'topbar'
 
 export interface AppShellTab {
   id: 'dashboard' | 'transactions' | 'planning' | 'settings'
   label: string
   description: string
+}
+
+export interface AppShellActivity {
+  id: string
+  label: string
+  tone?: '' | 'gf-pill-ok' | 'gf-pill-warning' | 'gf-pill-divergent'
 }
 
 interface AppShellProps {
@@ -23,8 +31,10 @@ interface AppShellProps {
   onModeChange: (value: UiMode) => void
   globalSearch: string
   onGlobalSearchChange: (value: string) => void
+  backgroundActivities?: AppShellActivity[]
   loading: boolean
   statusMessage: string
+  onBootstrapSegmentVisible?: (segment: InitShellSegmentId) => void
   sidebarPanel?: ReactNode
   sidebarActions?: ReactNode
   children: ReactNode
@@ -44,17 +54,41 @@ export function AppShell({
   onModeChange,
   globalSearch,
   onGlobalSearchChange,
+  backgroundActivities,
   loading,
   statusMessage,
+  onBootstrapSegmentVisible,
   sidebarPanel,
   sidebarActions,
   children,
 }: AppShellProps) {
   const activeTabMeta = tabs.find((item) => item.id === activeTab)
+  const loggedSegmentsRef = useRef<Record<InitShellSegmentId, boolean>>({
+    layout_base: false,
+    sidebar: false,
+    topbar: false,
+  })
+
+  const markSegment = (segment: InitShellSegmentId) => {
+    if (loggedSegmentsRef.current[segment]) return
+    loggedSegmentsRef.current[segment] = true
+    onBootstrapSegmentVisible?.(segment)
+  }
 
   return (
-    <div className="gf-layout">
-      <aside className="gf-sidebar" aria-label="Navegação principal">
+    <div
+      className="gf-layout"
+      ref={(node) => {
+        if (node) markSegment('layout_base')
+      }}
+    >
+      <aside
+        className="gf-sidebar"
+        aria-label="Navegação principal"
+        ref={(node) => {
+          if (node) markSegment('sidebar')
+        }}
+      >
         <div className="gf-brand">
           <p className="gf-brand-kicker">GarlicFinance</p>
           <h1>Editorial Finance</h1>
@@ -80,10 +114,24 @@ export function AppShell({
       </aside>
 
       <div className="gf-workspace">
-        <header className="gf-topbar">
+        <header
+          className="gf-topbar"
+          ref={(node) => {
+            if (node) markSegment('topbar')
+          }}
+        >
           <div className="gf-topbar-meta">
             <h2>{activeTabMeta?.label ?? 'GarlicFinance'}</h2>
             <p>{activeTabMeta?.description ?? ''}</p>
+            {backgroundActivities && backgroundActivities.length > 0 && (
+              <div className="gf-topbar-activity" role="status" aria-live="polite">
+                {backgroundActivities.map((activity) => (
+                  <span key={activity.id} className={`gf-pill ${activity.tone ?? 'gf-pill-warning'}`.trim()}>
+                    {activity.label}
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
 
           <div className="gf-topbar-controls">
@@ -130,7 +178,9 @@ export function AppShell({
           </div>
         </header>
 
-        <main className="gf-content">{children}</main>
+        <main className="gf-content" aria-busy={loading}>
+          {children}
+        </main>
 
         <footer className="gf-status">
           <span className={loading ? 'gf-dot busy' : 'gf-dot'} aria-hidden />
