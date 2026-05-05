@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 from datetime import datetime
@@ -260,7 +260,7 @@ def _parse_btg_card_transactions(file_path: Path, file_hash: str, btg_password: 
             flow_type = "credit_card_payment"
             amount_cents = abs(raw_cents)
         elif row["section"] == "credits":
-            flow_type = "income"
+            flow_type = "expense_adjustment"
             amount_cents = abs(raw_cents)
         else:
             flow_type = "expense" if raw_cents < 0 else "income"

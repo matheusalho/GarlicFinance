@@ -1,12 +1,15 @@
-﻿import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent, KeyboardEvent } from 'react'
 
 import { FirstUseJourneyCard } from '../common/FirstUseJourneyCard'
+import { HintBadge } from '../common/HintBadge'
 import { brl, shortDate } from '../../lib/format'
 import type { FirstUseJourneyCardProps } from '../common/FirstUseJourneyCard'
 import type {
   AppEventLogItem,
   CategorizationRuleItem,
+  CategoryKind,
+  CategoryCatalogUsageResponse,
   CategoryTreeItem,
   FeatureFlagsV1,
   ImportHistoryResponse,
@@ -49,8 +52,11 @@ interface SettingsTabProps {
   loading: boolean
   importJob: ImportJobStatusResponse | null
   importBusy: boolean
+  canCancelImport: boolean
   basePath: string
   onBasePathChange: (value: string) => void
+  onPickBasePath: () => void
+  onCancelImport: () => void
   autoImportEnabled: boolean
   autoImportLoaded: boolean
   onToggleAutoImport: (enabled: boolean) => void
@@ -69,14 +75,19 @@ interface SettingsTabProps {
   passwordTestOk: boolean | null
   newCategoryName: string
   newCategoryColor: string
+  newCategoryKind: CategoryKind
   onNewCategoryNameChange: (value: string) => void
   onNewCategoryColorChange: (value: string) => void
+  onNewCategoryKindChange: (value: CategoryKind) => void
   onCreateCategory: (event: FormEvent) => void
   categories: CategoryTreeItem[]
-  categoryDrafts: Record<string, { name: string; color: string }>
+  categoryCatalogUsage: CategoryCatalogUsageResponse
+  categoryDrafts: Record<string, { name: string; color: string; kind: CategoryKind }>
   onCategoryDraftNameChange: (categoryId: string, value: string) => void
   onCategoryDraftColorChange: (categoryId: string, value: string) => void
+  onCategoryDraftKindChange: (categoryId: string, value: CategoryKind) => void
   onSaveCategory: (categoryId: string) => void
+  onDeleteCategory: (categoryId: string) => Promise<void>
   newSubcategoryCategoryId: string
   newSubcategoryName: string
   onNewSubcategoryCategoryIdChange: (value: string) => void
@@ -88,6 +99,7 @@ interface SettingsTabProps {
   onSubcategoryDraftCategoryChange: (subcategoryId: string, value: string) => void
   onSubcategoryDraftNameChange: (subcategoryId: string, value: string) => void
   onSaveSubcategory: (subcategoryId: string) => void
+  onDeleteSubcategory: (subcategoryId: string) => Promise<void>
   rules: CategorizationRuleItem[]
   rulesDryRun: RulesDryRunResponse | null
   onRuleUpsert: (draft: RuleUpsertDraft) => Promise<void>
@@ -107,25 +119,27 @@ interface SettingsTabProps {
   sectionHint?: SettingsSectionHint
 }
 
-const ONBOARDING_STEPS: Array<{ id: 'import' | 'categorize' | 'dashboard' | 'projection'; label: string }> = [
+const ONBOARDING_STEPS: Array<{
+  id: 'import' | 'categories_setup' | 'dashboard' | 'projection'
+  label: string
+}> = [
   { id: 'import', label: 'Importar dados' },
-  { id: 'categorize', label: 'Revisar categorias' },
+  { id: 'categories_setup', label: 'Configurar categorias' },
   { id: 'dashboard', label: 'Explorar dashboard' },
   { id: 'projection', label: 'Rodar projeção' },
 ]
 
-const RUNTIME_FEATURE_FLAG_LABELS: Array<{ key: keyof FeatureFlagsV1; label: string }> = [
-  { key: 'onboardingEnabled', label: 'Onboarding guiado' },
-  { key: 'idleTabPrefetchEnabled', label: 'Prefetch ocioso de abas secundárias' },
-  { key: 'v2AsyncJobsEnabled', label: 'Importação assíncrona com progresso visível' },
-]
-
-const TRANSITION_FEATURE_FLAG_LABELS: Array<{ key: keyof FeatureFlagsV1; label: string }> = [
-  { key: 'newLayoutEnabled', label: 'Novo layout (Sidebar + Workspace)' },
-  { key: 'newDashboardEnabled', label: 'Dashboard redesenhado' },
-  { key: 'newTransactionsEnabled', label: 'Transações redesenhadas' },
-  { key: 'newPlanningEnabled', label: 'Planejamento redesenhado' },
-  { key: 'newSettingsEnabled', label: 'Configurações redesenhadas' },
+const RUNTIME_FEATURE_FLAG_LABELS: Array<{ key: keyof FeatureFlagsV1; label: string; description: string }> = [
+  {
+    key: 'idleTabPrefetchEnabled',
+    label: 'Prefetch ocioso de abas secundárias',
+    description: 'Antecipar o carregamento das abas mais provaveis apos o dashboard para reduzir o primeiro acesso.',
+  },
+  {
+    key: 'v2AsyncJobsEnabled',
+    label: 'Importação assíncrona com progresso visível',
+    description: 'Executa importacoes pesadas em job com progresso visivel, sem bloquear a interface principal.',
+  },
 ]
 
 const RULE_SOURCE_OPTIONS: Array<{ id: string; label: string }> = [
@@ -151,6 +165,7 @@ const IMPORT_STATUS_LABELS: Record<ImportRunStatus, string> = {
   partial: 'Parcial',
   error: 'Com erro',
   noop: 'Sem alterações',
+  cancelled: 'Cancelada',
 }
 
 const IMPORT_STATUS_TONE: Record<ImportRunStatus, '' | 'gf-pill-ok' | 'gf-pill-warning' | 'gf-pill-divergent'> = {
@@ -159,6 +174,7 @@ const IMPORT_STATUS_TONE: Record<ImportRunStatus, '' | 'gf-pill-ok' | 'gf-pill-w
   partial: 'gf-pill-warning',
   error: 'gf-pill-divergent',
   noop: '',
+  cancelled: 'gf-pill-warning',
 }
 
 const IMPORT_PHASE_LABELS: Record<string, string> = {
@@ -171,6 +187,8 @@ const IMPORT_PHASE_LABELS: Record<string, string> = {
   persisting_sources: 'Persistindo histórico',
   importing_transactions: 'Importando transações',
   auto_categorization: 'Aplicando regras',
+  cancelling: 'Cancelando importação',
+  cancelled: 'Cancelado',
   completed: 'Concluído',
   failed: 'Falhou',
 }
@@ -184,6 +202,12 @@ const SETTINGS_SECTION_LABELS: Record<SettingsSection, string> = {
   categories: 'Categorias',
   rules: 'Regras',
 }
+
+const CATEGORY_KIND_OPTIONS: Array<{ id: CategoryKind; label: string }> = [
+  { id: 'expense', label: 'Saída' },
+  { id: 'income', label: 'Entrada' },
+  { id: 'neutral', label: 'Neutra' },
+]
 
 interface CurrencyParseResult {
   cents: number | null
@@ -318,6 +342,38 @@ const formatImportScopeDetail = (run: ImportRunSummaryItem): string => {
   return 'Escopo completo da pasta base'
 }
 
+const normalizeCatalogLabel = (value: string): string =>
+  value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toLowerCase()
+
+const categoryUsageTotal = (usage?: CategoryCatalogUsageResponse['categories'][string]): number =>
+  (usage?.transactionCount ?? 0) +
+  (usage?.ruleCount ?? 0) +
+  (usage?.recurringCount ?? 0) +
+  (usage?.budgetCount ?? 0)
+
+const formatCatalogUsageSummary = (
+  usage:
+    | CategoryCatalogUsageResponse['categories'][string]
+    | CategoryCatalogUsageResponse['subcategories'][string]
+    | undefined,
+  includeSubcategories: boolean,
+): string => {
+  if (!usage) return 'Sem vínculos detectados.'
+  const parts: string[] = []
+  if (includeSubcategories && usage.subcategoryCount > 0) {
+    parts.push(`${usage.subcategoryCount} subcategoria(s)`)
+  }
+  if (usage.transactionCount > 0) parts.push(`${usage.transactionCount} transação(ões)`)
+  if (usage.ruleCount > 0) parts.push(`${usage.ruleCount} regra(s)`)
+  if (usage.recurringCount > 0) parts.push(`${usage.recurringCount} recorrência(s)`)
+  if (usage.budgetCount > 0) parts.push(`${usage.budgetCount} orçamento(s)`)
+  return parts.length > 0 ? parts.join(' • ') : 'Sem vínculos detectados.'
+}
+
 const shouldSuggestSecurityAction = (
   run: ImportRunSummaryItem | null,
   errorFiles: ImportRunFileItem[],
@@ -336,8 +392,11 @@ export function SettingsTab({
   loading,
   importJob,
   importBusy,
+  canCancelImport,
   basePath,
   onBasePathChange,
+  onPickBasePath,
+  onCancelImport,
   autoImportEnabled,
   autoImportLoaded,
   onToggleAutoImport,
@@ -356,14 +415,19 @@ export function SettingsTab({
   passwordTestOk,
   newCategoryName,
   newCategoryColor,
+  newCategoryKind,
   onNewCategoryNameChange,
   onNewCategoryColorChange,
+  onNewCategoryKindChange,
   onCreateCategory,
   categories,
+  categoryCatalogUsage,
   categoryDrafts,
   onCategoryDraftNameChange,
   onCategoryDraftColorChange,
+  onCategoryDraftKindChange,
   onSaveCategory,
+  onDeleteCategory,
   newSubcategoryCategoryId,
   newSubcategoryName,
   onNewSubcategoryCategoryIdChange,
@@ -375,6 +439,7 @@ export function SettingsTab({
   onSubcategoryDraftCategoryChange,
   onSubcategoryDraftNameChange,
   onSaveSubcategory,
+  onDeleteSubcategory,
   rules,
   rulesDryRun,
   onRuleUpsert,
@@ -414,6 +479,19 @@ export function SettingsTab({
   const [ruleCategoryId, setRuleCategoryId] = useState('')
   const [ruleSubcategoryId, setRuleSubcategoryId] = useState('')
   const [ruleConfidence, setRuleConfidence] = useState('0.75')
+
+  useEffect(() => {
+    if (!sectionHint || sectionHint === activeSection) return
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- sincroniza intenção de navegação externa para a seção local.
+    setActiveSection(sectionHint)
+    const focusTimeout = window.setTimeout(() => {
+      sectionButtonRefs.current[sectionHint]?.focus()
+    }, 0)
+    return () => {
+      window.clearTimeout(focusTimeout)
+    }
+  }, [activeSection, sectionHint])
+
   const recentErrors = errorTrail ?? []
   const latestImportRun = importHistory.runs[0] ?? null
   const latestErroredFiles = useMemo(
@@ -488,6 +566,23 @@ export function SettingsTab({
     () => categories.find((category) => category.id === ruleCategoryId)?.subcategories ?? [],
     [categories, ruleCategoryId],
   )
+  const normalizedNewCategoryName = normalizeCatalogLabel(newCategoryName)
+  const newCategoryNameError = useMemo(() => {
+    if (!newCategoryName.trim()) return 'Nome da categoria é obrigatório.'
+    const duplicate = categories.some(
+      (category) => normalizeCatalogLabel(category.name) === normalizedNewCategoryName,
+    )
+    return duplicate ? 'Já existe uma categoria com este nome.' : ''
+  }, [categories, newCategoryName, normalizedNewCategoryName])
+  const newSubcategoryNameError = useMemo(() => {
+    if (!newSubcategoryName.trim()) return 'Nome da subcategoria é obrigatório.'
+    const targetCategory = categories.find((category) => category.id === newSubcategoryCategoryId)
+    if (!targetCategory) return 'Selecione uma categoria válida.'
+    const duplicate = targetCategory.subcategories.some(
+      (subcategory) => normalizeCatalogLabel(subcategory.name) === normalizeCatalogLabel(newSubcategoryName),
+    )
+    return duplicate ? 'Já existe uma subcategoria com este nome na categoria selecionada.' : ''
+  }, [categories, newSubcategoryCategoryId, newSubcategoryName])
 
   const resetRuleForm = () => {
     setEditingRuleId(null)
@@ -544,6 +639,22 @@ export function SettingsTab({
     if (editingRuleId === rule.id) resetRuleForm()
   }
 
+  const handleDeleteCategory = async (category: CategoryTreeItem) => {
+    const message = `Excluir a categoria "${category.name}"? Esta ação só funciona quando não houver vínculos ativos.`
+    if (typeof window !== 'undefined' && typeof window.confirm === 'function' && !window.confirm(message)) {
+      return
+    }
+    await onDeleteCategory(category.id)
+  }
+
+  const handleDeleteSubcategory = async (subcategory: SubcategoryListItem) => {
+    const message = `Excluir a subcategoria "${subcategory.name}"? Esta ação só funciona quando não houver vínculos ativos.`
+    if (typeof window !== 'undefined' && typeof window.confirm === 'function' && !window.confirm(message)) {
+      return
+    }
+    await onDeleteSubcategory(subcategory.id)
+  }
+
   const getSectionTabId = (section: SettingsSection): string => `settings-tab-${section}`
   const getSectionPanelId = (section: SettingsSection): string => `settings-panel-${section}`
 
@@ -582,7 +693,7 @@ export function SettingsTab({
   }
 
   return (
-    <div className="gf-stack">
+    <div className="gf-stack gf-settings-stack">
       {firstUseJourneyCard && <FirstUseJourneyCard {...firstUseJourneyCard} />}
 
       <section className="gf-card">
@@ -637,6 +748,16 @@ export function SettingsTab({
               placeholder="C:\\Projetos\\GarlicFinance\\ArquivosFinance"
             />
           </label>
+          <div className="gf-inline-actions">
+            <button
+              className="gf-button ghost"
+              disabled={loading || importBusy}
+              type="button"
+              onClick={onPickBasePath}
+            >
+              Selecionar pasta
+            </button>
+          </div>
           <label className="gf-toggle">
             <input
               type="checkbox"
@@ -671,6 +792,11 @@ export function SettingsTab({
             <button className="gf-button secondary" disabled={loading || importBusy} type="button" onClick={() => onImport(true)}>
               Reprocessar tudo
             </button>
+            {canCancelImport && (
+              <button className="gf-button ghost" disabled={loading || !importBusy} type="button" onClick={onCancelImport}>
+                Cancelar importação
+              </button>
+            )}
           </div>
           {importWarnings.length > 0 && (
             <ul className="gf-warning-list">
@@ -703,13 +829,13 @@ export function SettingsTab({
             </article>
           )}
 
-          <div className="gf-onboarding-box" aria-live="polite">
+          <div className="gf-onboarding-box gf-import-center-panel" aria-live="polite">
             <header className="gf-section-header">
               <div>
                 <h4>Central de Importação 2.0</h4>
                 <p>Histórico recente, último status por arquivo e base para reprocessamento seletivo.</p>
               </div>
-              <div className="gf-inline-actions">
+              <div className="gf-import-center-toolbar">
                 <label className="gf-field gf-field-inline">
                   Execuções por página
                   <select
@@ -753,7 +879,7 @@ export function SettingsTab({
 
             {latestImportRun ? (
               <div className="gf-inline-grid gf-inline-grid-3">
-                <article className="gf-card">
+                <article className="gf-card gf-import-center-kpi">
                   <small>Última execução</small>
                   <div className="gf-inline-actions">
                     <strong>{shortDate(latestImportRun.finishedAt || latestImportRun.startedAt)}</strong>
@@ -766,16 +892,16 @@ export function SettingsTab({
                     {latestImportRun.dedupedCount} deduplicadas
                   </small>
                 </article>
-                <article className="gf-card">
+                <article className="gf-card gf-import-center-kpi">
                   <small>Escopo da execução</small>
                   <strong>{formatImportScopeLabel(latestImportRun)}</strong>
                   <small>{formatImportScopeDetail(latestImportRun)}</small>
                 </article>
-                <article className="gf-card">
+                <article className="gf-card gf-import-center-kpi">
                   <small>Fontes monitoradas</small>
-                  <strong>{importHistory.sourceSummary.length}</strong>
+                  <strong>{importHistory.sourceSummary.length} fonte(s)</strong>
                   <small>
-                    {importHistory.latestFiles.length} arquivo(s) com status conhecido na visão atual
+                    {importHistory.latestFiles.length} arquivo(s) com status conhecido nesta visão
                   </small>
                 </article>
               </div>
@@ -794,16 +920,16 @@ export function SettingsTab({
                     <p>Resumo acionável da base atual para corrigir o próximo problema útil.</p>
                   </div>
                 </header>
-                <div className="gf-inline-grid gf-inline-grid-3">
-                  <div>
+                <div className="gf-inline-grid gf-inline-grid-3 gf-import-center-kpi-grid">
+                  <div className="gf-import-center-kpi">
                     <small>Arquivos com erro</small>
                     <strong>{latestErroredFiles.length}</strong>
                   </div>
-                  <div>
+                  <div className="gf-import-center-kpi">
                     <small>Avisos da última execução</small>
                     <strong>{latestImportRun.warningCount}</strong>
                   </div>
-                  <div>
+                  <div className="gf-import-center-kpi">
                     <small>Escopo executado</small>
                     <strong>{formatImportScopeLabel(latestImportRun)}</strong>
                   </div>
@@ -1128,7 +1254,7 @@ export function SettingsTab({
                 {recentErrors.map((item) => (
                   <li key={item.id}>
                     <strong>{item.eventType}</strong> ({item.scope})<br />
-                    <small>{shortDate(item.createdAt)} ? {item.level.toUpperCase()}</small><br />
+                    <small>{shortDate(item.createdAt)} • {item.level.toUpperCase()}</small><br />
                     <small>{item.message}</small>
                   </li>
                 ))}
@@ -1207,8 +1333,9 @@ export function SettingsTab({
 
           <div className="gf-toggle-grid">
             {RUNTIME_FEATURE_FLAG_LABELS.map((flag) => (
-              <label key={flag.key} className="gf-toggle">
+              <div key={flag.key} className="gf-toggle">
                 <input
+                  id={`runtime-flag-${flag.key}`}
                   type="checkbox"
                   checked={featureFlags[flag.key]}
                   onChange={(event) =>
@@ -1218,35 +1345,18 @@ export function SettingsTab({
                     })
                   }
                 />
-                <span>{flag.label}</span>
-              </label>
+                <div className="gf-toggle-copy">
+                  <label htmlFor={`runtime-flag-${flag.key}`}>{flag.label}</label>
+                  <HintBadge label={`Detalhes da flag ${flag.label}`} hint={flag.description} />
+                </div>
+              </div>
             ))}
           </div>
 
-          <details className="gf-details">
-            <summary>Compatibilidade temporária e rollout técnico</summary>
-            <p className="gf-muted">
-              Controles transitórios usados enquanto a V2 ainda convive com caminhos de fallback. Eles
-              não devem permanecer expostos na release final da 2.0.0.
-            </p>
-            <div className="gf-toggle-grid">
-              {TRANSITION_FEATURE_FLAG_LABELS.map((flag) => (
-                <label key={flag.key} className="gf-toggle">
-                  <input
-                    type="checkbox"
-                    checked={featureFlags[flag.key]}
-                    onChange={(event) =>
-                      onFeatureFlagsChange({
-                        ...featureFlags,
-                        [flag.key]: event.target.checked,
-                      })
-                    }
-                  />
-                  <span>{flag.label}</span>
-                </label>
-              ))}
-            </div>
-          </details>
+          <p className="gf-muted">
+            Flags de transição V1 foram aposentadas do runtime principal na Sprint 8.1. A partir daqui,
+            o comportamento do app segue somente a trilha V2.
+          </p>
 
           <div className="gf-onboarding-box">
             <h4>Onboarding guiado</h4>
@@ -1290,9 +1400,11 @@ export function SettingsTab({
                   Nova categoria
                   <input
                     value={newCategoryName}
+                    aria-invalid={Boolean(newCategoryNameError)}
                     onChange={(event) => onNewCategoryNameChange(event.target.value)}
                     placeholder="Ex: Educação"
                   />
+                  {newCategoryNameError && <small className="gf-field-error">{newCategoryNameError}</small>}
                 </label>
                 <label className="gf-field">
                   Cor
@@ -1302,25 +1414,70 @@ export function SettingsTab({
                     onChange={(event) => onNewCategoryColorChange(event.target.value)}
                   />
                 </label>
+                <label className="gf-field">
+                  Natureza
+                  <select
+                    value={newCategoryKind}
+                    onChange={(event) => onNewCategoryKindChange(event.target.value as CategoryKind)}
+                  >
+                    {CATEGORY_KIND_OPTIONS.map((option) => (
+                      <option key={option.id} value={option.id}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
                 <div className="gf-inline-actions">
-                  <button className="gf-button" type="submit">Criar categoria</button>
+                  <button className="gf-button" type="submit" disabled={Boolean(newCategoryNameError)}>
+                    Criar categoria
+                  </button>
                 </div>
               </div>
             </form>
             <ul className="gf-list">
               {categories.map((category) => (
                 <li key={category.id} className="gf-list-inline">
+                  <div className="gf-stack">
+                    <div className="gf-inline-actions">
+                      <strong>{category.name}</strong>
+                      <span className="gf-pill">
+                        {CATEGORY_KIND_OPTIONS.find((option) => option.id === category.kind)?.label ?? category.kind}
+                      </span>
+                      <span className={`gf-pill ${categoryUsageTotal(categoryCatalogUsage.categories[category.id]) > 0 ? 'gf-pill-warning' : 'gf-pill-ok'}`.trim()}>
+                        {categoryUsageTotal(categoryCatalogUsage.categories[category.id]) > 0 ? 'Em uso' : 'Livre'}
+                      </span>
+                    </div>
+                    <small className="gf-muted">
+                      {formatCatalogUsageSummary(categoryCatalogUsage.categories[category.id], true)}
+                    </small>
+                  </div>
                   <input
+                    aria-label={`Nome da categoria ${category.name}`}
                     value={categoryDrafts[category.id]?.name ?? category.name}
                     onChange={(event) => onCategoryDraftNameChange(category.id, event.target.value)}
                   />
                   <input
                     type="color"
+                    aria-label={`Cor da categoria ${category.name}`}
                     value={categoryDrafts[category.id]?.color ?? category.color}
                     onChange={(event) => onCategoryDraftColorChange(category.id, event.target.value)}
                   />
+                  <select
+                    aria-label={`Natureza da categoria ${category.name}`}
+                    value={categoryDrafts[category.id]?.kind ?? category.kind}
+                    onChange={(event) => onCategoryDraftKindChange(category.id, event.target.value as CategoryKind)}
+                  >
+                    {CATEGORY_KIND_OPTIONS.map((option) => (
+                      <option key={option.id} value={option.id}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
                   <button type="button" className="gf-button ghost" onClick={() => onSaveCategory(category.id)}>
                     Salvar
+                  </button>
+                  <button type="button" className="gf-button ghost" onClick={() => void handleDeleteCategory(category)}>
+                    Excluir
                   </button>
                 </li>
               ))}
@@ -1354,18 +1511,40 @@ export function SettingsTab({
                   Nova subcategoria
                   <input
                     value={newSubcategoryName}
+                    aria-invalid={Boolean(newSubcategoryNameError)}
                     onChange={(event) => onNewSubcategoryNameChange(event.target.value)}
                     placeholder="Ex: Farmácia"
                   />
+                  {newSubcategoryNameError && <small className="gf-field-error">{newSubcategoryNameError}</small>}
                 </label>
               </div>
-              <button className="gf-button" type="submit">Criar subcategoria</button>
+              <button className="gf-button" type="submit" disabled={Boolean(newSubcategoryNameError)}>
+                Criar subcategoria
+              </button>
             </form>
 
             <ul className="gf-list">
               {allSubcategories.map((subcategory) => (
                 <li key={subcategory.id} className="gf-list-inline">
+                  <div className="gf-stack">
+                    <div className="gf-inline-actions">
+                      <strong>{subcategory.name}</strong>
+                      <span
+                        className={`gf-pill ${
+                          categoryUsageTotal(categoryCatalogUsage.subcategories[subcategory.id]) > 0
+                            ? 'gf-pill-warning'
+                            : 'gf-pill-ok'
+                        }`.trim()}
+                      >
+                        {categoryUsageTotal(categoryCatalogUsage.subcategories[subcategory.id]) > 0 ? 'Em uso' : 'Livre'}
+                      </span>
+                    </div>
+                    <small className="gf-muted">
+                      {formatCatalogUsageSummary(categoryCatalogUsage.subcategories[subcategory.id], false)}
+                    </small>
+                  </div>
                   <select
+                    aria-label={`Categoria da subcategoria ${subcategory.name}`}
                     value={subcategoryDrafts[subcategory.id]?.categoryId ?? subcategory.categoryId}
                     onChange={(event) => onSubcategoryDraftCategoryChange(subcategory.id, event.target.value)}
                   >
@@ -1376,11 +1555,19 @@ export function SettingsTab({
                     ))}
                   </select>
                   <input
+                    aria-label={`Nome da subcategoria ${subcategory.name}`}
                     value={subcategoryDrafts[subcategory.id]?.name ?? subcategory.name}
                     onChange={(event) => onSubcategoryDraftNameChange(subcategory.id, event.target.value)}
                   />
                   <button type="button" className="gf-button ghost" onClick={() => onSaveSubcategory(subcategory.id)}>
                     Salvar
+                  </button>
+                  <button
+                    type="button"
+                    className="gf-button ghost"
+                    onClick={() => void handleDeleteSubcategory(subcategory)}
+                  >
+                    Excluir
                   </button>
                 </li>
               ))}
@@ -1676,8 +1863,3 @@ export function SettingsTab({
     </div>
   )
 }
-
-
-
-
-

@@ -3,6 +3,7 @@ import type { FormEvent } from 'react'
 
 import { FirstUseJourneyCard } from '../common/FirstUseJourneyCard'
 import { GuidedEmptyState } from '../common/GuidedEmptyState'
+import { HintBadge } from '../common/HintBadge'
 import { brl, shortDate } from '../../lib/format'
 import type {
   DashboardSummaryResponse,
@@ -61,7 +62,7 @@ const RECON_STATUS_LABEL: Record<'ok' | 'warning' | 'divergent' | 'no_snapshot',
 const buildReconciliationPeriodHint = (reconciliation: ReconciliationSummaryResponse | null): string => {
   const start = reconciliation?.periodStart ?? '-'
   const end = reconciliation?.periodEnd ?? '-'
-  return `Periodo analisado: ${start} ate ${end}`
+  return `Período analisado: ${start} até ${end}`
 }
 
 const buildAccountDetailsHint = (account: {
@@ -72,10 +73,10 @@ const buildAccountDetailsHint = (account: {
 }): string => {
   const snapshotText = account.snapshotAt
     ? `Snapshot: ${shortDate(account.snapshotAt)} | ${brl(account.snapshotCents ?? 0)}`
-    : 'Snapshot: nao informado'
+    : 'Snapshot: não informado'
   const divergenceText =
-    account.divergenceCents === null ? 'Divergencia: nao calculada' : `Divergencia: ${brl(account.divergenceCents)}`
-  const movementText = `Movimento no periodo: ${brl(account.periodNetCents)}`
+    account.divergenceCents === null ? 'Divergência: não calculada' : `Divergência: ${brl(account.divergenceCents)}`
+  const movementText = `Movimento no período: ${brl(account.periodNetCents)}`
   return `${snapshotText}\n${divergenceText}\n${movementText}`
 }
 
@@ -189,12 +190,12 @@ export function DashboardTab({
     <article className="gf-card">
       <header className="gf-section-header">
         <div>
-          <h3>Tendencia mensal</h3>
-          <p>Carregando visualizacao analitica.</p>
+          <h3>Tendência mensal</h3>
+          <p>Carregando visualização analítica.</p>
         </div>
       </header>
       <div className="gf-empty">
-        <p>Preparando grafico do periodo.</p>
+        <p>Preparando gráfico do período.</p>
       </div>
     </article>
   )
@@ -205,22 +206,22 @@ export function DashboardTab({
         <header className="gf-section-header">
           <div>
             <h3>Top gastos por categoria</h3>
-            <p>Carregando distribuicao por categoria.</p>
+            <p>Carregando distribuição por categoria.</p>
           </div>
         </header>
         <div className="gf-empty">
-          <p>Preparando grafico de barras.</p>
+          <p>Preparando gráfico de barras.</p>
         </div>
       </article>
       <article className="gf-card">
         <header className="gf-section-header">
           <div>
-            <h3>Distribuicao de despesas</h3>
-            <p>Carregando participacao percentual.</p>
+            <h3>Distribuição de despesas</h3>
+            <p>Carregando participação percentual.</p>
           </div>
         </header>
         <div className="gf-empty">
-          <p>Preparando grafico de distribuicao.</p>
+          <p>Preparando gráfico de distribuição.</p>
         </div>
       </article>
     </section>
@@ -320,45 +321,40 @@ export function DashboardTab({
       <section className="gf-card">
         <header className="gf-section-header">
           <div>
-            <h3>Fechamento mensal rapido</h3>
-            <p>Priorize os pontos que bloqueiam o fechamento do periodo.</p>
+            <h3>Fechamento mensal rápido</h3>
+            <p>Priorize os pontos que bloqueiam o fechamento do período.</p>
           </div>
         </header>
         <div className="gf-metric-grid">
           <article className="gf-metric-card">
-            <p>Orcamento</p>
+            <p>Orçamento</p>
             <strong>{budgetsInAttention}</strong>
             <small>
-              Em atencao:{' '}
-              <span className={`gf-pill gf-pill-${budgetStatus}`}>{budgetStatus === 'ok' ? 'Controlado' : 'Atencao'}</span>
+              Em atenção:{' '}
+              <span className={`gf-pill gf-pill-${budgetStatus}`}>{budgetStatus === 'ok' ? 'Controlado' : 'Atenção'}</span>
             </small>
             <button type="button" className="gf-button ghost" onClick={() => onOpenBudgetPlanner?.()}>
-              Abrir orcamento
+              Abrir orçamento
             </button>
           </article>
           <article className="gf-metric-card">
-            <p>Reconciliacao</p>
+            <p>Reconciliação</p>
             <strong>{reconciliationIssues}</strong>
-            <small>
-              Contas com ajuste:{' '}
-              <span className={`gf-pill gf-pill-${reconciliationStatus}`}>{reconciliationStatus === 'ok' ? 'Conferido' : 'Atencao'}</span>
-              <span
-                className="gf-hint"
-                tabIndex={0}
-                role="note"
-                aria-label="Detalhes do periodo da reconciliacao"
-                data-hint={buildReconciliationPeriodHint(reconciliation)}
-              >
-                i
-              </span>
-            </small>
+              <small>
+                Contas com ajuste:{' '}
+                <span className={`gf-pill gf-pill-${reconciliationStatus}`}>{reconciliationStatus === 'ok' ? 'Conferido' : 'Atenção'}</span>
+                <HintBadge
+                  label="Detalhes do período da reconciliação"
+                  hint={buildReconciliationPeriodHint(reconciliation)}
+                />
+              </small>
           </article>
           <article className="gf-metric-card">
-            <p>Pendencias</p>
+            <p>Pendências</p>
             <strong>{pendingReviewCount}</strong>
-            <small>Transacoes ainda sem revisao de categoria.</small>
+            <small>Transações ainda sem revisão de categoria.</small>
             <button type="button" className="gf-button ghost" onClick={() => onOpenTransactions?.()}>
-              Ir para revisao
+              Ir para revisão
             </button>
           </article>
         </div>
@@ -368,8 +364,8 @@ export function DashboardTab({
         <article className="gf-card">
           <header className="gf-section-header">
             <div>
-              <h3>Reconciliacao de saldo</h3>
-              <p>Conferencia inicial entre saldo reportado e saldo reconstruido por transacoes.</p>
+              <h3>Reconciliação de saldo</h3>
+              <p>Conferência inicial entre saldo reportado e saldo reconstruído por transações.</p>
             </div>
           </header>
           <div className="gf-grid gf-grid-2">
@@ -379,17 +375,12 @@ export function DashboardTab({
                 <strong>{brl(account.estimatedCents)}</strong>
                 <small>
                   Status: <span className={`gf-pill gf-pill-${account.status}`}>{RECON_STATUS_LABEL[account.status]}</span>
-                  <span
-                    className="gf-hint"
-                    tabIndex={0}
-                    role="note"
-                    aria-label={`Detalhes da reconciliacao de ${account.label.toLowerCase()}`}
-                    data-hint={buildAccountDetailsHint(account)}
-                  >
-                    i
-                  </span>
+                  <HintBadge
+                    label={`Detalhes da reconciliação de ${account.label.toLowerCase()}`}
+                    hint={buildAccountDetailsHint(account)}
+                  />
                 </small>
-                <small>Pendentes de revisao: {account.pendingReviewCount}</small>
+                <small>Pendentes de revisão: {account.pendingReviewCount}</small>
                 <button
                   type="button"
                   className="gf-button ghost"
@@ -400,12 +391,12 @@ export function DashboardTab({
                     )
                   }
                 >
-                  Revisar pendencias de {account.label.toLowerCase()}
+                  Revisar pendências de {account.label.toLowerCase()}
                 </button>
               </article>
             ))}
             {(reconciliation?.accounts.length ?? 0) === 0 && (
-              <p className="gf-empty-inline">Sem dados de reconciliacao para o periodo selecionado.</p>
+              <p className="gf-empty-inline">Sem dados de reconciliação para o período selecionado.</p>
             )}
           </div>
 
@@ -420,7 +411,7 @@ export function DashboardTab({
                   }
                 >
                   <option value="checking">Conta</option>
-                  <option value="credit_card">Cartao</option>
+                  <option value="credit_card">Cartão</option>
                 </select>
               </label>
               <label className="gf-field">
@@ -441,7 +432,7 @@ export function DashboardTab({
               </label>
             </div>
             <label className="gf-field">
-              Observacao (opcional)
+              Observação (opcional)
               <input
                 value={snapshotDescription}
                 onChange={(event) => setSnapshotDescription(event.target.value)}
@@ -459,12 +450,12 @@ export function DashboardTab({
           <article className="gf-card">
             <header className="gf-section-header">
               <div>
-                <h3>Tendencia mensal</h3>
-                <p>Receitas, despesas e saldo no periodo.</p>
+                <h3>Tendência mensal</h3>
+                <p>Receitas, despesas e saldo no período.</p>
               </div>
             </header>
             <div className="gf-empty">
-              <p>Sem dados suficientes para o grafico de tendencia.</p>
+              <p>Sem dados suficientes para o gráfico de tendência.</p>
             </div>
           </article>
         ) : (
@@ -508,7 +499,7 @@ export function DashboardTab({
               <header className="gf-section-header">
                 <div>
                   <h3>Top gastos por categoria</h3>
-                  <p>Categorias com maior impacto no periodo.</p>
+                  <p>Categorias com maior impacto no período.</p>
                 </div>
               </header>
               <ul className="gf-list">
@@ -525,12 +516,12 @@ export function DashboardTab({
             <article className="gf-card">
               <header className="gf-section-header">
                 <div>
-                  <h3>Distribuicao de despesas</h3>
-                  <p>Participacao percentual por categoria.</p>
+                  <h3>Distribuição de despesas</h3>
+                  <p>Participação percentual por categoria.</p>
                 </div>
               </header>
               <div className="gf-empty">
-                <p>Sem distribuicao disponivel no periodo.</p>
+                <p>Sem distribuição disponível no período.</p>
               </div>
             </article>
           </section>

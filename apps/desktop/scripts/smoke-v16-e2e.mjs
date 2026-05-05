@@ -38,11 +38,11 @@ async function waitForHttp(url, timeoutMs = 90_000) {
   throw new Error(`Timeout esperando servidor em ${url}`)
 }
 
-function startDevServer() {
+function startLocalServer() {
   const npmCommand = 'npm'
   const child = spawn(
     npmCommand,
-    ['run', 'dev', '--', '--host', '127.0.0.1', '--port', '4173', '--strictPort'],
+    ['run', 'preview', '--', '--host', '127.0.0.1', '--port', '4173', '--strictPort'],
     {
       cwd: desktopDir,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -90,6 +90,17 @@ async function clickSidebarTab(page, labelPattern) {
   const tab = page.locator('.gf-nav .gf-nav-item').filter({ hasText: labelPattern }).first()
   await tab.waitFor({ state: 'visible', timeout: 10_000 })
   await tab.click()
+}
+
+async function dismissOnboardingModalIfVisible(page) {
+  const backdrop = page.locator('.gf-modal-backdrop').first()
+  const visible = await backdrop.isVisible().catch(() => false)
+  if (!visible) return
+  const closeButton = backdrop.getByRole('button', { name: /^Fechar$/i }).first()
+  if (await closeButton.count()) {
+    await closeButton.click({ force: true })
+  }
+  await backdrop.waitFor({ state: 'hidden', timeout: 10_000 }).catch(() => {})
 }
 
 function isoDateWithTime(date, time = '12:00:00') {
@@ -172,9 +183,10 @@ function buildMonthlyClosingSeed() {
 }
 
 async function runMonthlyClosingFlow(page, outputDir) {
+  await dismissOnboardingModalIfVisible(page)
   const reconciliationPanel = page
     .locator('article.gf-card')
-    .filter({ has: page.getByRole('heading', { name: /Reconciliacao de saldo/i }) })
+    .filter({ has: page.getByRole('heading', { name: /Reconciliação de saldo/i }) })
     .first()
   await reconciliationPanel.waitFor({ state: 'visible', timeout: 15_000 })
 
@@ -183,13 +195,13 @@ async function runMonthlyClosingFlow(page, outputDir) {
     .filter({ hasText: /\bConta\b/i })
     .first()
   await checkingCard.waitFor({ state: 'visible', timeout: 10_000 })
-  await checkingCard.getByText(/Pendentes de revisao:\s*1/i).waitFor({ timeout: 10_000 })
+  await checkingCard.getByText(/Pendentes de revis[aã]o:\s*1/i).waitFor({ timeout: 10_000 })
 
   const openCheckingPendingButton = checkingCard.getByRole('button', {
-    name: /Revisar pendencias de conta/i,
+    name: /Revisar pend[eê]ncias de conta/i,
   })
   if (await openCheckingPendingButton.isDisabled()) {
-    throw new Error('Atalho de pendencias da conta iniciou desabilitado no dashboard.')
+    throw new Error('Atalho de pendências da conta iniciou desabilitado no dashboard.')
   }
   await openCheckingPendingButton.click()
 
@@ -201,7 +213,7 @@ async function runMonthlyClosingFlow(page, outputDir) {
     state: 'visible',
     timeout: 10_000,
   })
-  await page.locator('.gf-chip', { hasText: 'Somente pendencias' }).first().waitFor({
+  await page.locator('.gf-chip', { hasText: 'Somente pendências' }).first().waitFor({
     state: 'visible',
     timeout: 10_000,
   })
@@ -213,6 +225,10 @@ async function runMonthlyClosingFlow(page, outputDir) {
   const categorySelect = page.getByLabel(/Categoria para Mercado Smoke Fechamento/i).first()
   await categorySelect.waitFor({ state: 'visible', timeout: 10_000 })
   await categorySelect.selectOption('alimentacao')
+  await dismissOnboardingModalIfVisible(page)
+  const saveDecisionButton = page.getByRole('button', { name: /^Salvar decisão$/i }).first()
+  await saveDecisionButton.waitFor({ state: 'visible', timeout: 10_000 })
+  await saveDecisionButton.click()
 
   await page
     .locator('.gf-review-list-compact .gf-empty p', {
@@ -227,13 +243,13 @@ async function runMonthlyClosingFlow(page, outputDir) {
 
   await clickSidebarTab(page, /Dashboard/i)
   await reconciliationPanel.waitFor({ state: 'visible', timeout: 10_000 })
-  await checkingCard.getByText(/Pendentes de revisao:\s*0/i).waitFor({ timeout: 12_000 })
+  await checkingCard.getByText(/Pendentes de revis[aã]o:\s*0/i).waitFor({ timeout: 12_000 })
 
   const updatedShortcut = checkingCard.getByRole('button', {
-    name: /Revisar pendencias de conta/i,
+    name: /Revisar pend[eê]ncias de conta/i,
   })
   if (!(await updatedShortcut.isDisabled())) {
-    throw new Error('Atalho de pendencias da conta nao foi desabilitado apos categorizacao.')
+    throw new Error('Atalho de pendências da conta não foi desabilitado após categorização.')
   }
   await page.screenshot({
     path: path.join(outputDir, '04-monthly-close-reconciliation-updated.png'),
@@ -258,6 +274,7 @@ async function runCriticalFlow(page, viewportName, outputDir) {
 
   await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 90_000 })
   await page.locator('.gf-layout').waitFor({ state: 'visible', timeout: 20_000 })
+  await dismissOnboardingModalIfVisible(page)
   await page.screenshot({
     path: path.join(outputDir, '01-shell-home.png'),
     fullPage: true,
@@ -356,7 +373,7 @@ async function main() {
 
   let server
   if (shouldStartServer) {
-    server = startDevServer()
+    server = startLocalServer()
     await waitForHttp(baseUrl)
   }
 
@@ -404,10 +421,10 @@ async function main() {
     await writeFile(path.join(runOutputDir, 'report.json'), JSON.stringify(report, null, 2), 'utf8')
   }
 
-  console.log(`Smoke V1.6 concluído com sucesso. Artefatos: ${runOutputDir}`)
+  console.log(`Smoke V2.0 concluído com sucesso. Artefatos: ${runOutputDir}`)
 }
 
 main().catch((error) => {
-  console.error(`Smoke V1.6 falhou: ${String(error)}`)
+  console.error(`Smoke V2.0 falhou: ${String(error)}`)
   process.exitCode = 1
 })

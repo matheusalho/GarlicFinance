@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 from typing import TypedDict
 
-from .utils import _decode_binary_text, normalize_space
+from .utils import _decode_binary_text, _text_quality_score, normalize_space
 
 
 class RawOfxTransaction(TypedDict):
@@ -40,7 +40,7 @@ def parse_ofx_file(file_path: Path) -> list[RawOfxTransaction]:
 
     # Some OFX files advertise inconsistent headers; choose the cleanest decoding.
     fallback = _decode_binary_text(binary)
-    text = fallback if fallback.count("�") < preferred.count("�") else preferred
+    text = fallback if _text_quality_score(fallback) >= _text_quality_score(preferred) else preferred
 
     transactions: list[RawOfxTransaction] = []
     blocks = re.findall(r"<STMTTRN>(.*?)</STMTTRN>", text, flags=re.IGNORECASE | re.DOTALL)

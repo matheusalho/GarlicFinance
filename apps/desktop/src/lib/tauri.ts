@@ -1,6 +1,7 @@
 import type {
   AppEventLogItem,
   CategorizationRuleItem,
+  CategoryCatalogUsageResponse,
   CategoryTreeItem,
   DashboardSummaryResponse,
   FeatureFlagsV1,
@@ -8,6 +9,7 @@ import type {
   GoalListItem,
   ImportHistoryResponse,
   ImportJobStatusResponse,
+  ImportPreflightResponse,
   ImportRunFileItem,
   ImportRunResponse,
   ImportRunScope,
@@ -22,6 +24,8 @@ import type {
   ReconciliationSummaryResponse,
   RecurringTemplateItem,
   RulesDryRunResponse,
+  TransactionSuggestionItem,
+  TransactionSuggestionsResponse,
   TransactionItem,
   TransactionsListResponse,
   TransactionsReviewQueueResponse,
@@ -61,22 +65,61 @@ const defaultOnboardingState = (): OnboardingStateV1 => ({
   stepsCompleted: [],
 })
 
+const normalizeOnboardingStep = (step: string): OnboardingStateV1['stepsCompleted'][number] | null => {
+  const normalized = step.trim().toLowerCase()
+  if (normalized === 'categorize') return 'categories_setup'
+  if (
+    normalized === 'import' ||
+    normalized === 'categories_setup' ||
+    normalized === 'dashboard' ||
+    normalized === 'projection'
+  ) {
+    return normalized
+  }
+  return null
+}
+
+const normalizeOnboardingState = (state: OnboardingStateV1): OnboardingStateV1 => {
+  const seen = new Set<OnboardingStateV1['stepsCompleted'][number]>()
+  const normalizedSteps: OnboardingStateV1['stepsCompleted'] = []
+  for (const rawStep of state.stepsCompleted ?? []) {
+    const normalized = normalizeOnboardingStep(String(rawStep))
+    if (!normalized || seen.has(normalized)) continue
+    seen.add(normalized)
+    normalizedSteps.push(normalized)
+  }
+  return {
+    completed: Boolean(state.completed),
+    stepsCompleted: normalizedSteps,
+  }
+}
+
 const defaultFeatureFlags = (): FeatureFlagsV1 => ({
-  newLayoutEnabled: true,
-  newDashboardEnabled: true,
-  newTransactionsEnabled: true,
-  newPlanningEnabled: true,
-  newSettingsEnabled: true,
-  onboardingEnabled: true,
   idleTabPrefetchEnabled: true,
   v2AsyncJobsEnabled: true,
 })
+
+const normalizeFeatureFlags = (flags?: Partial<FeatureFlagsV1> | null): FeatureFlagsV1 => {
+  const defaults = defaultFeatureFlags()
+  const candidate = (flags ?? {}) as Record<string, unknown>
+  return {
+    idleTabPrefetchEnabled:
+      typeof candidate.idleTabPrefetchEnabled === 'boolean'
+        ? candidate.idleTabPrefetchEnabled
+        : defaults.idleTabPrefetchEnabled,
+    v2AsyncJobsEnabled:
+      typeof candidate.v2AsyncJobsEnabled === 'boolean'
+        ? candidate.v2AsyncJobsEnabled
+        : defaults.v2AsyncJobsEnabled,
+  }
+}
 
 const defaultMockCategories = (): CategoryTreeItem[] => [
   {
     id: 'alimentacao',
     name: 'Alimentação',
     color: '#e07a5f',
+    kind: 'expense',
     subcategories: [
       { id: 'alimentacao_mercado', categoryId: 'alimentacao', name: 'Mercado' },
       { id: 'alimentacao_restaurantes', categoryId: 'alimentacao', name: 'Restaurantes' },
@@ -86,6 +129,7 @@ const defaultMockCategories = (): CategoryTreeItem[] => [
     id: 'transporte',
     name: 'Transporte',
     color: '#3d405b',
+    kind: 'expense',
     subcategories: [
       { id: 'transporte_app', categoryId: 'transporte', name: 'Aplicativos' },
       { id: 'transporte_combustivel', categoryId: 'transporte', name: 'Combustível' },
@@ -95,30 +139,70 @@ const defaultMockCategories = (): CategoryTreeItem[] => [
     id: 'moradia',
     name: 'Moradia',
     color: '#81b29a',
+    kind: 'expense',
     subcategories: [],
   },
   {
     id: 'saude',
     name: 'Saúde',
     color: '#f2cc8f',
+    kind: 'expense',
     subcategories: [],
   },
   {
     id: 'lazer',
     name: 'Lazer',
     color: '#457b9d',
+    kind: 'expense',
     subcategories: [],
   },
   {
     id: 'investimentos',
     name: 'Investimentos',
     color: '#2a9d8f',
+    kind: 'expense',
     subcategories: [],
   },
   {
     id: 'outros',
     name: 'Outros',
     color: '#6f7d8c',
+    kind: 'expense',
+    subcategories: [],
+  },
+  {
+    id: 'salario_proventos',
+    name: 'Salário e Proventos',
+    color: '#2a9d8f',
+    kind: 'income',
+    subcategories: [],
+  },
+  {
+    id: 'receitas_variaveis',
+    name: 'Receitas Variáveis',
+    color: '#3ba86f',
+    kind: 'income',
+    subcategories: [],
+  },
+  {
+    id: 'encargos_juros',
+    name: 'Encargos e Juros',
+    color: '#b56576',
+    kind: 'expense',
+    subcategories: [],
+  },
+  {
+    id: 'transferencias_proprias',
+    name: 'Transferências Próprias',
+    color: '#5e6472',
+    kind: 'neutral',
+    subcategories: [],
+  },
+  {
+    id: 'pagamentos_fatura',
+    name: 'Pagamentos de Fatura',
+    color: '#6d597a',
+    kind: 'neutral',
     subcategories: [],
   },
 ]
@@ -141,6 +225,19 @@ const ensureUniqueId = (existingIds: Set<string>, baseId: string): string => {
   return `${baseId}_${counter}`
 }
 
+const normalizeCategoryKind = (value: unknown): 'income' | 'expense' | 'neutral' => {
+  const kind = String(value ?? '').trim().toLowerCase()
+  if (kind === 'income' || kind === 'expense' || kind === 'neutral') return kind
+  return 'expense'
+}
+
+const normalizeCategoryTree = (categories: CategoryTreeItem[]): CategoryTreeItem[] =>
+  categories.map((category) => ({
+    ...category,
+    kind: normalizeCategoryKind((category as CategoryTreeItem & { kind?: unknown }).kind),
+    subcategories: Array.isArray(category.subcategories) ? category.subcategories : [],
+  }))
+
 const readMockCategories = (): CategoryTreeItem[] => {
   const value = window.localStorage.getItem(MOCK_CATEGORIES_KEY)
   if (!value) {
@@ -150,7 +247,10 @@ const readMockCategories = (): CategoryTreeItem[] => {
   }
 
   try {
-    return JSON.parse(value) as CategoryTreeItem[]
+    const parsed = JSON.parse(value) as CategoryTreeItem[]
+    const normalized = normalizeCategoryTree(parsed)
+    writeMockCategories(normalized)
+    return normalized
   } catch {
     const defaults = defaultMockCategories()
     window.localStorage.setItem(MOCK_CATEGORIES_KEY, JSON.stringify(defaults))
@@ -204,8 +304,10 @@ const summarizeTransactions = (
   let incomeCents = 0
   let expenseCents = 0
   for (const tx of items) {
-    if (tx.amountCents > 0) incomeCents += tx.amountCents
-    if (tx.amountCents < 0) expenseCents += tx.amountCents
+    if (tx.flowType === 'income') incomeCents += tx.amountCents
+    if (tx.flowType === 'expense' || tx.flowType === 'expense_adjustment') {
+      expenseCents += tx.amountCents
+    }
   }
   return {
     incomeCents,
@@ -254,7 +356,18 @@ const readBrowserTransactionFilters = (value: unknown): BrowserTransactionsFilte
 }
 
 const isPendingTransaction = (tx: TransactionItem): boolean =>
-  (tx.flowType === 'income' || tx.flowType === 'expense') && !tx.categoryId.trim()
+  (tx.flowType === 'income' || tx.flowType === 'expense' || tx.flowType === 'expense_adjustment') &&
+  !tx.categoryId.trim()
+
+const expectedCategoryKindForFlow = (flowType: TransactionItem['flowType']): 'income' | 'expense' | 'neutral' | null => {
+  if (flowType === 'income') return 'income'
+  if (flowType === 'expense' || flowType === 'expense_adjustment') return 'expense'
+  if (flowType === 'transfer' || flowType === 'credit_card_payment') return 'neutral'
+  return null
+}
+
+const isRuleEligibleFlow = (flowType: TransactionItem['flowType']): boolean =>
+  flowType === 'income' || flowType === 'expense' || flowType === 'expense_adjustment'
 
 const filterTransactionsForList = (
   items: TransactionItem[],
@@ -311,10 +424,38 @@ interface BrowserRuleMatch {
   score: number
 }
 
-const computeRuleScore = (rule: CategorizationRuleItem, tx: TransactionItem): number | null => {
-  if (tx.flowType !== 'income' && tx.flowType !== 'expense') return null
+const buildSuggestionExplanation = (
+  rule: CategorizationRuleItem,
+  tx: TransactionItem,
+): string[] => {
+  const explanation: string[] = []
+  if (rule.merchantPattern.trim()) {
+    explanation.push(`Descricao/estabelecimento combina com "${rule.merchantPattern.trim()}".`)
+  }
+  if (rule.direction) {
+    explanation.push(`Fluxo compatível com a regra: ${rule.direction === 'income' ? 'receita' : 'despesa'}.`)
+  }
+  if (rule.sourceType.trim()) {
+    explanation.push(`Fonte compatível com a regra: ${rule.sourceType.trim()}.`)
+  }
+  if (rule.amountMinCents !== null || rule.amountMaxCents !== null) {
+    explanation.push('Faixa de valor compatível com a regra.')
+  }
+  if (rule.usageCount > 0) {
+    explanation.push(`Regra já reaproveitada ${rule.usageCount} vez(es).`)
+  }
+  if (explanation.length === 0) {
+    explanation.push(`Compatibilidade estrutural encontrada para ${tx.descriptionRaw}.`)
+  }
+  return explanation
+}
 
-  const txDirection = tx.flowType
+const computeRuleScore = (rule: CategorizationRuleItem, tx: TransactionItem): number | null => {
+  if (tx.flowType !== 'income' && tx.flowType !== 'expense' && tx.flowType !== 'expense_adjustment') {
+    return null
+  }
+
+  const txDirection = tx.flowType === 'income' ? 'income' : 'expense'
   let score = 0
   if (rule.sourceType && rule.sourceType !== tx.sourceType) return null
   score += 0.35
@@ -347,7 +488,9 @@ const computeRuleMatches = (): BrowserRuleMatch[] => {
   const matches: BrowserRuleMatch[] = []
   for (const tx of transactions) {
     if (tx.categoryId.trim()) continue
-    if (tx.flowType !== 'income' && tx.flowType !== 'expense') continue
+    if (tx.flowType !== 'income' && tx.flowType !== 'expense' && tx.flowType !== 'expense_adjustment') {
+      continue
+    }
 
     let bestRuleId: number | null = null
     let bestScore = -1
@@ -382,7 +525,9 @@ const buildDryRunResponse = (sampleLimit: number): RulesDryRunResponse => {
     const tx = transactionsById.get(match.transactionId)
     const rule = rulesById.get(match.ruleId)
     if (!tx || !rule) return []
-    if (tx.flowType !== 'income' && tx.flowType !== 'expense') return []
+    if (tx.flowType !== 'income' && tx.flowType !== 'expense' && tx.flowType !== 'expense_adjustment') {
+      return []
+    }
     return [
       {
         transactionId: tx.id,
@@ -405,6 +550,102 @@ const buildDryRunResponse = (sampleLimit: number): RulesDryRunResponse => {
     matchedCount: matches.length,
     sample,
   }
+}
+
+const buildTransactionSuggestionsResponse = (
+  transactionIds: number[],
+  limit: number,
+): TransactionSuggestionsResponse => {
+  const transactions = readMockTransactions()
+  const rules = readMockRules()
+  const transactionsById = new Map(transactions.map((tx) => [tx.id, tx]))
+  const rulesById = new Map(rules.map((rule) => [rule.id, rule]))
+  const requestedIds = new Set(transactionIds.filter((item) => Number.isFinite(item)))
+  const matches = computeRuleMatches()
+    .filter((match) => requestedIds.size === 0 || requestedIds.has(match.transactionId))
+    .slice(0, limit)
+
+  const items: TransactionSuggestionItem[] = matches.flatMap((match) => {
+    const tx = transactionsById.get(match.transactionId)
+    const rule = rulesById.get(match.ruleId)
+    if (!tx || !rule) return []
+    return [
+      {
+        transactionId: tx.id,
+        ruleId: rule.id,
+        score: match.score,
+        confidence: rule.confidence,
+        usageCount: rule.usageCount,
+        categoryId: rule.categoryId,
+        categoryName: rule.categoryName,
+        subcategoryId: rule.subcategoryId,
+        subcategoryName: rule.subcategoryName,
+        explanation: buildSuggestionExplanation(rule, tx),
+      },
+    ]
+  })
+
+  return { items }
+}
+
+const buildCategoryCatalogUsageResponse = (): CategoryCatalogUsageResponse => {
+  const categories = readMockCategories()
+  const transactions = readMockTransactions()
+  const rules = readMockRules()
+  const budgets = readMockBudgets()
+  const recurring = readStorageJson<RecurringTemplateItem[]>(MOCK_RECURRING_KEY, () => [])
+
+  const categoryUsage: CategoryCatalogUsageResponse['categories'] = {}
+  const subcategoryUsage: CategoryCatalogUsageResponse['subcategories'] = {}
+
+  for (const category of categories) {
+    categoryUsage[category.id] = {
+      transactionCount: 0,
+      ruleCount: 0,
+      recurringCount: 0,
+      budgetCount: 0,
+      subcategoryCount: category.subcategories.length,
+    }
+    for (const subcategory of category.subcategories) {
+      subcategoryUsage[subcategory.id] = {
+        transactionCount: 0,
+        ruleCount: 0,
+        recurringCount: 0,
+        budgetCount: 0,
+        subcategoryCount: 0,
+      }
+    }
+  }
+
+  for (const tx of transactions) {
+    if (tx.categoryId && categoryUsage[tx.categoryId]) categoryUsage[tx.categoryId].transactionCount += 1
+    if (tx.subcategoryId && subcategoryUsage[tx.subcategoryId]) {
+      subcategoryUsage[tx.subcategoryId].transactionCount += 1
+    }
+  }
+
+  for (const rule of rules) {
+    if (rule.categoryId && categoryUsage[rule.categoryId]) categoryUsage[rule.categoryId].ruleCount += 1
+    if (rule.subcategoryId && subcategoryUsage[rule.subcategoryId]) {
+      subcategoryUsage[rule.subcategoryId].ruleCount += 1
+    }
+  }
+
+  for (const budget of budgets) {
+    if (budget.categoryId && categoryUsage[budget.categoryId]) categoryUsage[budget.categoryId].budgetCount += 1
+    if (budget.subcategoryId && subcategoryUsage[budget.subcategoryId]) {
+      subcategoryUsage[budget.subcategoryId].budgetCount += 1
+    }
+  }
+
+  for (const item of recurring) {
+    if (item.categoryId && categoryUsage[item.categoryId]) categoryUsage[item.categoryId].recurringCount += 1
+    if (item.subcategoryId && subcategoryUsage[item.subcategoryId]) {
+      subcategoryUsage[item.subcategoryId].recurringCount += 1
+    }
+  }
+
+  return { categories: categoryUsage, subcategories: subcategoryUsage }
 }
 
 const readMockGoals = (): GoalListItem[] =>
@@ -546,7 +787,7 @@ const buildMockReconciliationSummary = (
   const transactions = readMockTransactions()
   const accountLabels: Array<{ accountType: string; label: string }> = [
     { accountType: 'checking', label: 'Conta' },
-    { accountType: 'credit_card', label: 'Cartao' },
+    { accountType: 'credit_card', label: 'Cartão' },
   ]
 
   const accounts = accountLabels.map(({ accountType, label }) => {
@@ -712,6 +953,61 @@ const completeMockImportJob = (jobId: string): void => {
   }
 }
 
+const cancelMockImportJob = (jobId: string): ImportJobStatusResponse => {
+  const jobs = readMockImportJobs()
+  const job = jobs.find((item) => item.jobId === jobId)
+  if (!job) throw new Error('Job de importação não encontrado no mock local.')
+
+  if (job.status !== 'queued' && job.status !== 'running') return job
+
+  const finishedAt = new Date().toISOString()
+  const warnings = [...job.warnings]
+  if (!warnings.includes('Importação cancelada pelo usuário.')) {
+    warnings.push('Importação cancelada pelo usuário.')
+  }
+  const result: ImportRunResponse = {
+    runId: job.runId,
+    status: 'cancelled',
+    filesProcessed: 0,
+    inserted: 0,
+    deduped: 0,
+    warnings,
+    files: [],
+  }
+  const cancelledJob: ImportJobStatusResponse = {
+    ...job,
+    status: 'cancelled',
+    phase: 'completed',
+    progressPercent: 100,
+    message: 'Importação cancelada pelo usuário.',
+    finishedAt,
+    warnings,
+    errorMessage: '',
+    result,
+  }
+  upsertMockImportJob(cancelledJob)
+
+  const runs = readMockImportRuns()
+  const runIndex = runs.findIndex((item) => item.id === job.runId)
+  if (runIndex >= 0) {
+    const nextRuns = [...runs]
+    nextRuns[runIndex] = {
+      ...nextRuns[runIndex],
+      finishedAt,
+      status: 'cancelled',
+      warningCount: warnings.length,
+      warnings,
+      filesProcessed: 0,
+      insertedCount: 0,
+      dedupedCount: 0,
+      errorMessage: '',
+    }
+    writeMockImportRuns(nextRuns)
+  }
+
+  return cancelledJob
+}
+
 const buildMockImportSourceSummary = (
   latestFiles: ImportRunFileItem[],
 ): ImportSourceSummaryItem[] => {
@@ -751,6 +1047,7 @@ interface ObservabilityLogInput {
 
 const TIMED_COMMANDS = new Set([
   'import_scan',
+  'import_preflight',
   'import_run',
   'import_history',
   'dashboard_summary',
@@ -824,6 +1121,48 @@ const browserMock = async <T>(
   switch (command) {
     case 'import_scan':
       return { candidates: [] } as T
+    case 'import_preflight': {
+      const failedOnly = Boolean(args.failedOnly)
+      const reprocess = Boolean(args.reprocess)
+      const rawScope = (args.scope ?? {}) as Partial<ImportRunScope>
+      const includePaths = Array.isArray(rawScope.includePaths)
+        ? rawScope.includePaths.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+        : []
+      const sourceTypes = Array.isArray(rawScope.sourceTypes)
+        ? rawScope.sourceTypes.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+        : []
+      const effectiveScope: ImportRunScope = {
+        mode:
+          typeof rawScope.mode === 'string' && rawScope.mode.trim()
+            ? rawScope.mode.trim()
+            : sourceTypes.length > 0
+              ? failedOnly
+                ? 'source_failed_only'
+                : reprocess
+                  ? 'source_reprocess'
+                  : 'source_selection'
+              : includePaths.length > 0
+                ? failedOnly
+                  ? 'path_failed_only'
+                  : reprocess
+                    ? 'path_reprocess'
+                    : 'path_selection'
+                : failedOnly
+                  ? 'failed_only'
+                  : reprocess
+                    ? 'reprocess_all'
+                    : 'all',
+        includePaths,
+        sourceTypes,
+      }
+      return {
+        effectiveScope,
+        candidateCount: 0,
+        scopedCandidateCount: 0,
+        requiresBtgPassword: false,
+        warnings: ['UI em modo navegador. Para importar de verdade, rode no runtime Tauri.'],
+      } as T
+    }
     case 'import_run': {
       const basePath = String(args.basePath ?? '').trim()
       const reprocess = Boolean(args.reprocess)
@@ -981,8 +1320,13 @@ const browserMock = async <T>(
     case 'import_job_status': {
       const jobId = String(args.jobId ?? '').trim()
       const job = readMockImportJobs().find((item) => item.jobId === jobId)
-      if (!job) throw new Error('Job de importacao nao encontrado no mock local.')
+      if (!job) throw new Error('Job de importação não encontrado no mock local.')
       return job as T
+    }
+    case 'import_job_cancel': {
+      const jobId = String(args.jobId ?? '').trim()
+      if (!jobId) throw new Error('Informe um job de importação válido para cancelar.')
+      return cancelMockImportJob(jobId) as T
     }
     case 'import_history': {
       const basePath = String(args.basePath ?? '').trim()
@@ -999,6 +1343,10 @@ const browserMock = async <T>(
         latestFiles,
         sourceSummary: buildMockImportSourceSummary(latestFiles),
       } as T
+    }
+    case 'settings_pick_import_base_path': {
+      const currentPath = String(args.currentPath ?? '').trim()
+      return (currentPath || null) as T
     }
     case 'transactions_list':
       {
@@ -1037,25 +1385,127 @@ const browserMock = async <T>(
         categoryId: string
         subcategoryId: string
       }
-      const categoryId = input.categoryId.trim()
+      let categoryId = input.categoryId.trim()
       const subcategoryId = input.subcategoryId.trim()
-      const { categoryName, subcategoryName } = resolveRuleTargetNames(categoryId, subcategoryId)
-      if (!categoryName) throw new Error('Categoria da transação não encontrada.')
+
+      if (subcategoryId) {
+        const categories = readMockCategories()
+        const parentCategory =
+          categories.find((category) => category.subcategories.some((sub) => sub.id === subcategoryId))?.id ?? ''
+        if (!parentCategory) throw new Error('Subcategoria da transação não encontrada.')
+        if (!categoryId) categoryId = parentCategory
+        if (categoryId !== parentCategory) {
+          throw new Error('A subcategoria informada não pertence à categoria selecionada.')
+        }
+      }
+
+      const { categoryName, subcategoryName } = categoryId
+        ? resolveRuleTargetNames(categoryId, subcategoryId)
+        : { categoryName: '', subcategoryName: '' }
+      if (categoryId && !categoryName) throw new Error('Categoria da transação não encontrada.')
 
       const transactionIds = new Set((input.transactionIds ?? []).map((item) => Number(item)))
       const transactions = readMockTransactions()
+      const categories = readMockCategories()
+      const categoryKind = categoryId
+        ? categories.find((item) => item.id === categoryId)?.kind
+        : null
+      if (categoryId && !categoryKind) throw new Error('Categoria da transação não encontrada.')
+
+      for (const tx of transactions) {
+        if (!transactionIds.has(tx.id)) continue
+        if (!categoryId) continue
+        if (tx.flowType === 'balance_snapshot') {
+          throw new Error('Snapshots de saldo não podem receber categoria.')
+        }
+        const expectedKind = expectedCategoryKindForFlow(tx.flowType)
+        if (!expectedKind) {
+          throw new Error('Fluxo da transação não aceita categorização.')
+        }
+        if (categoryKind !== expectedKind) {
+          throw new Error('Categoria incompatível com o tipo de fluxo da transação.')
+        }
+      }
+
       let updated = 0
       for (const tx of transactions) {
         if (!transactionIds.has(tx.id)) continue
         tx.categoryId = categoryId
         tx.categoryName = categoryName
-        tx.subcategoryId = subcategoryId
-        tx.subcategoryName = subcategoryName
-        tx.needsReview = false
+        tx.subcategoryId = categoryId ? subcategoryId : ''
+        tx.subcategoryName = categoryId ? subcategoryName : ''
+        tx.needsReview = isPendingTransaction(tx)
         updated += 1
       }
       writeMockTransactions(transactions)
       return { updated } as T
+    }
+    case 'transactions_apply_decision': {
+      const input = args.input as {
+        transactionId: number
+        categoryId: string
+        subcategoryId: string
+        saveAsRule: boolean
+      }
+
+      const updateResult = await browserMock<{ updated: number }>('transactions_update_category', {
+        input: {
+          transactionIds: [input.transactionId],
+          categoryId: input.categoryId,
+          subcategoryId: input.subcategoryId,
+        },
+      })
+      const updated = updateResult.updated > 0
+      if (!updated) return { updated: false } as T
+
+      let ruleId: number | undefined
+      if (input.saveAsRule) {
+        const transactions = readMockTransactions()
+        const tx = transactions.find((item) => item.id === Number(input.transactionId))
+        if (!tx) throw new Error('Transação não encontrada para criar regra.')
+        if (!tx.categoryId.trim()) throw new Error('Selecione uma categoria antes de salvar a regra.')
+        if (!isRuleEligibleFlow(tx.flowType)) {
+          throw new Error('Somente receitas e despesas aceitam regra reaproveitável.')
+        }
+
+        const merchantPattern = (tx.merchantNormalized || tx.descriptionRaw || '').trim().toLowerCase()
+        if (!merchantPattern) {
+          throw new Error('A transação não possui descrição suficiente para criar regra.')
+        }
+
+        const direction = tx.flowType === 'income' ? 'income' : 'expense'
+        const { categoryName, subcategoryName } = resolveRuleTargetNames(tx.categoryId, tx.subcategoryId)
+        if (!categoryName) throw new Error('Categoria da regra não encontrada.')
+
+        const rules = readMockRules()
+        const now = new Date().toISOString()
+        const draft: CategorizationRuleItem = {
+          id: nextNumericId(rules),
+          sourceType: tx.sourceType,
+          direction,
+          merchantPattern,
+          amountMinCents: null,
+          amountMaxCents: null,
+          categoryId: tx.categoryId,
+          categoryName,
+          subcategoryId: tx.subcategoryId,
+          subcategoryName,
+          confidence: 0.9,
+          usageCount: 0,
+          updatedAt: now,
+        }
+        rules.push(draft)
+        writeMockRules(rules)
+        ruleId = draft.id
+      }
+
+      return { updated: true, ruleId } as T
+    }
+    case 'transactions_suggestions': {
+      const input = (args.input as { transactionIds?: number[]; limit?: number } | undefined) ?? {}
+      const limitArg = Number(input.limit ?? 160)
+      const limit = Number.isFinite(limitArg) ? Math.max(1, Math.min(300, Math.trunc(limitArg))) : 160
+      return buildTransactionSuggestionsResponse(input.transactionIds ?? [], limit) as T
     }
     case 'dashboard_summary':
       return {
@@ -1066,11 +1516,20 @@ const browserMock = async <T>(
       } as T
     case 'categories_list':
       return readMockCategories() as T
+    case 'categories_usage_summary':
+      return buildCategoryCatalogUsageResponse() as T
     case 'categories_upsert': {
       const categories = readMockCategories()
-      const input = args.input as { id?: string; name: string; color: string }
+      const input = args.input as { id?: string; name: string; color: string; kind: 'income' | 'expense' | 'neutral' }
       const name = input.name.trim()
       if (!name) throw new Error('Nome da categoria é obrigatório.')
+      if (!['income', 'expense', 'neutral'].includes(input.kind)) {
+        throw new Error('Natureza da categoria inválida.')
+      }
+      const duplicateCategory = categories.find(
+        (item) => item.id !== input.id && item.name.localeCompare(name, undefined, { sensitivity: 'accent' }) === 0,
+      )
+      if (duplicateCategory) throw new Error('Ja existe uma categoria com este nome.')
 
       if (input.id) {
         const index = categories.findIndex((item) => item.id === input.id)
@@ -1079,6 +1538,7 @@ const browserMock = async <T>(
           ...categories[index],
           name,
           color: input.color || categories[index].color,
+          kind: input.kind,
         }
         writeMockCategories(categories)
         return { categoryId: categories[index].id } as T
@@ -1090,10 +1550,39 @@ const browserMock = async <T>(
         id: categoryId,
         name,
         color: input.color || '#6f7d8c',
+        kind: input.kind,
         subcategories: [],
       })
       writeMockCategories(categories)
       return { categoryId } as T
+    }
+    case 'categories_delete': {
+      const categories = readMockCategories()
+      const input = args.input as { categoryId: string }
+      const categoryId = input.categoryId.trim()
+      const category = categories.find((item) => item.id === categoryId)
+      if (!category) throw new Error('Categoria não encontrada.')
+      const usage = buildCategoryCatalogUsageResponse().categories[categoryId] ?? {
+        transactionCount: 0,
+        ruleCount: 0,
+        recurringCount: 0,
+        budgetCount: 0,
+        subcategoryCount: 0,
+      }
+      const blockers = [
+        usage.subcategoryCount ? `${usage.subcategoryCount} subcategoria(s)` : '',
+        usage.transactionCount ? `${usage.transactionCount} transacao(oes)` : '',
+        usage.ruleCount ? `${usage.ruleCount} regra(s)` : '',
+        usage.recurringCount ? `${usage.recurringCount} recorrencia(s)` : '',
+        usage.budgetCount ? `${usage.budgetCount} orcamento(s)` : '',
+      ].filter(Boolean)
+      if (blockers.length > 0) {
+        throw new Error(
+          `Nao foi possivel excluir a categoria porque ela ainda esta vinculada a ${blockers.join(', ')}.`,
+        )
+      }
+      writeMockCategories(categories.filter((item) => item.id !== categoryId))
+      return { ok: true } as T
     }
     case 'subcategories_upsert': {
       const categories = readMockCategories()
@@ -1105,6 +1594,12 @@ const browserMock = async <T>(
 
       const targetCategory = categories.find((item) => item.id === categoryId)
       if (!targetCategory) throw new Error('Categoria não encontrada.')
+      const duplicateSubcategory = targetCategory.subcategories.find(
+        (item) => item.id !== input.id && item.name.localeCompare(name, undefined, { sensitivity: 'accent' }) === 0,
+      )
+      if (duplicateSubcategory) {
+        throw new Error('Ja existe uma subcategoria com este nome na categoria selecionada.')
+      }
 
       if (input.id) {
         const sourceCategory = categories.find((item) =>
@@ -1134,6 +1629,36 @@ const browserMock = async <T>(
       targetCategory.subcategories.sort((a, b) => a.name.localeCompare(b.name))
       writeMockCategories(categories)
       return { subcategoryId } as T
+    }
+    case 'subcategories_delete': {
+      const categories = readMockCategories()
+      const input = args.input as { subcategoryId: string }
+      const subcategoryId = input.subcategoryId.trim()
+      const sourceCategory = categories.find((item) =>
+        item.subcategories.some((sub) => sub.id === subcategoryId),
+      )
+      if (!sourceCategory) throw new Error('Subcategoria não encontrada.')
+      const usage = buildCategoryCatalogUsageResponse().subcategories[subcategoryId] ?? {
+        transactionCount: 0,
+        ruleCount: 0,
+        recurringCount: 0,
+        budgetCount: 0,
+        subcategoryCount: 0,
+      }
+      const blockers = [
+        usage.transactionCount ? `${usage.transactionCount} transacao(oes)` : '',
+        usage.ruleCount ? `${usage.ruleCount} regra(s)` : '',
+        usage.recurringCount ? `${usage.recurringCount} recorrencia(s)` : '',
+        usage.budgetCount ? `${usage.budgetCount} orcamento(s)` : '',
+      ].filter(Boolean)
+      if (blockers.length > 0) {
+        throw new Error(
+          `Nao foi possivel excluir a subcategoria porque ela ainda esta vinculada a ${blockers.join(', ')}.`,
+        )
+      }
+      sourceCategory.subcategories = sourceCategory.subcategories.filter((item) => item.id !== subcategoryId)
+      writeMockCategories(categories)
+      return { ok: true } as T
     }
     case 'goals_list': {
       const goals = readMockGoals()
@@ -1257,7 +1782,7 @@ const browserMock = async <T>(
       const category = categories.find((item) => item.id === categoryId)
       if (!category) throw new Error('Categoria do orcamento nao encontrada.')
       if (subcategoryId && !category.subcategories.some((item) => item.id === subcategoryId)) {
-        throw new Error('Subcategoria nao pertence a categoria selecionada.')
+        throw new Error('Subcategoria não pertence à categoria selecionada.')
       }
 
       const budgets = readMockBudgets()
@@ -1323,7 +1848,7 @@ const browserMock = async <T>(
       return buildMockReconciliationSummary(periodStart, periodEnd) as T
     }
     case 'projection_run':
-      return { monthlyProjection: [], goalProgress: [] } as T
+      return { monthlyProjection: [], scheduledProjection: [], goalProgress: [] } as T
     case 'manual_transaction_add': {
       const input = args.input as {
         occurredAt: string
@@ -1373,7 +1898,7 @@ const browserMock = async <T>(
       if (!Number.isFinite(balanceCents)) throw new Error('Saldo do snapshot invalido.')
       const descriptionRaw = String(input.descriptionRaw ?? '').trim()
       const fallbackDescription =
-        accountType === 'credit_card' ? 'Snapshot manual cartao' : 'Snapshot manual conta'
+        accountType === 'credit_card' ? 'Snapshot manual cartão' : 'Snapshot manual conta'
 
       const transactions = readMockTransactions()
       const transactionId = nextNumericId(transactions)
@@ -1499,24 +2024,30 @@ const browserMock = async <T>(
       return { ok: true } as T
     }
     case 'settings_onboarding_get': {
-      const state = readStorageJson<OnboardingStateV1>(
+      const stored = readStorageJson<OnboardingStateV1>(
         MOCK_ONBOARDING_STATE_KEY,
         defaultOnboardingState,
       )
+      const state = normalizeOnboardingState(stored)
+      writeStorageJson(MOCK_ONBOARDING_STATE_KEY, state)
       return state as T
     }
     case 'settings_onboarding_set': {
-      const payload = (args.input as OnboardingStateV1 | undefined) ?? defaultOnboardingState()
+      const payload = normalizeOnboardingState(
+        (args.input as OnboardingStateV1 | undefined) ?? defaultOnboardingState(),
+      )
       writeStorageJson(MOCK_ONBOARDING_STATE_KEY, payload)
       return { ok: true } as T
     }
     case 'settings_feature_flags_get': {
-      const flags = readStorageJson<FeatureFlagsV1>(MOCK_FEATURE_FLAGS_KEY, defaultFeatureFlags)
+      const storedFlags = readStorageJson<Partial<FeatureFlagsV1>>(MOCK_FEATURE_FLAGS_KEY, defaultFeatureFlags)
+      const flags = normalizeFeatureFlags(storedFlags)
+      writeStorageJson(MOCK_FEATURE_FLAGS_KEY, flags)
       return { flags } as T
     }
     case 'settings_feature_flags_set': {
       const flags = (args.input as { flags?: FeatureFlagsV1 } | undefined)?.flags
-      if (flags) writeStorageJson(MOCK_FEATURE_FLAGS_KEY, flags)
+      if (flags) writeStorageJson(MOCK_FEATURE_FLAGS_KEY, normalizeFeatureFlags(flags))
       return { ok: true } as T
     }
     case 'rules_list': {
@@ -1546,6 +2077,19 @@ const browserMock = async <T>(
       }
       const normalizedCategoryId = input.categoryId.trim()
       if (!normalizedCategoryId) throw new Error('Categoria da regra é obrigatória.')
+      if (input.direction !== 'income' && input.direction !== 'expense') {
+        throw new Error('Direção da regra inválida. Use income ou expense.')
+      }
+
+      const categories = readMockCategories()
+      const category = categories.find((item) => item.id === normalizedCategoryId)
+      if (!category) throw new Error('Categoria da regra não encontrada.')
+      if (category.kind === 'neutral') {
+        throw new Error('Regras automáticas só podem usar categorias de entrada ou saída.')
+      }
+      if (category.kind !== input.direction) {
+        throw new Error('Direção da regra incompatível com a natureza da categoria.')
+      }
 
       const { categoryName, subcategoryName } = resolveRuleTargetNames(
         normalizedCategoryId,
@@ -1573,7 +2117,7 @@ const browserMock = async <T>(
       const ruleDraft: CategorizationRuleItem = {
         id: input.id ?? nextNumericId(rules),
         sourceType: input.sourceType.trim(),
-        direction: input.direction || '',
+        direction: input.direction,
         merchantPattern: input.merchantPattern.trim(),
         amountMinCents,
         amountMaxCents,
@@ -1627,7 +2171,7 @@ const browserMock = async <T>(
         tx.categoryName = categoryName || rule.categoryName
         tx.subcategoryId = rule.subcategoryId
         tx.subcategoryName = subcategoryName || rule.subcategoryName
-        tx.needsReview = false
+        tx.needsReview = isPendingTransaction(tx)
         updatesByRuleId.set(rule.id, (updatesByRuleId.get(rule.id) ?? 0) + 1)
         updated += 1
       }
@@ -1687,7 +2231,7 @@ const reportCommandTiming = async (
     level: normalizedDuration >= WARN_COMMAND_DURATION_MS ? 'warn' : 'info',
     eventType: 'frontend.command.timing',
     scope: command,
-    message: `Comando ${command} concluido em ${normalizedDuration}ms`,
+    message: `Comando ${command} concluído em ${normalizedDuration}ms`,
     contextJson: JSON.stringify({
       command,
       durationMs: normalizedDuration,
@@ -1731,6 +2275,20 @@ export const commands = {
     const invoke = await getInvoke()
     return invoke<ImportScanResponse>('import_scan', { basePath })
   },
+  async importPreflight(
+    basePath: string,
+    reprocess = false,
+    failedOnly = false,
+    scope?: Partial<ImportRunScope>,
+  ): Promise<ImportPreflightResponse> {
+    const invoke = await getInvoke()
+    return invoke<ImportPreflightResponse>('import_preflight', {
+      basePath,
+      reprocess,
+      failedOnly,
+      scope,
+    })
+  },
   async importRun(
     basePath: string,
     reprocess = false,
@@ -1757,6 +2315,10 @@ export const commands = {
   async importJobStatus(jobId: string): Promise<ImportJobStatusResponse> {
     const invoke = await getInvoke()
     return invoke<ImportJobStatusResponse>('import_job_status', { jobId })
+  },
+  async importJobCancel(jobId: string): Promise<ImportJobStatusResponse> {
+    const invoke = await getInvoke()
+    return invoke<ImportJobStatusResponse>('import_job_cancel', { jobId })
   },
   async importHistory(basePath?: string, limit = 8): Promise<ImportHistoryResponse> {
     const invoke = await getInvoke()
@@ -1786,17 +2348,46 @@ export const commands = {
       input: { transactionIds, categoryId, subcategoryId },
     })
   },
+  async transactionsApplyDecision(input: {
+    transactionId: number
+    categoryId: string
+    subcategoryId: string
+    saveAsRule: boolean
+  }): Promise<{ updated: boolean; ruleId?: number }> {
+    const invoke = await getInvoke()
+    return invoke<{ updated: boolean; ruleId?: number }>('transactions_apply_decision', {
+      input,
+    })
+  },
+  async transactionsSuggestions(
+    transactionIds: number[],
+    limit = 160,
+  ): Promise<TransactionSuggestionsResponse> {
+    const invoke = await getInvoke()
+    return invoke<TransactionSuggestionsResponse>('transactions_suggestions', {
+      input: { transactionIds, limit },
+    })
+  },
   async categoriesList(): Promise<CategoryTreeItem[]> {
     const invoke = await getInvoke()
     return invoke<CategoryTreeItem[]>('categories_list')
+  },
+  async categoriesUsageSummary(): Promise<CategoryCatalogUsageResponse> {
+    const invoke = await getInvoke()
+    return invoke<CategoryCatalogUsageResponse>('categories_usage_summary')
   },
   async categoriesUpsert(input: {
     id?: string
     name: string
     color: string
+    kind: 'income' | 'expense' | 'neutral'
   }): Promise<{ categoryId: string }> {
     const invoke = await getInvoke()
     return invoke<{ categoryId: string }>('categories_upsert', { input })
+  },
+  async categoriesDelete(categoryId: string): Promise<{ ok: boolean }> {
+    const invoke = await getInvoke()
+    return invoke<{ ok: boolean }>('categories_delete', { input: { categoryId } })
   },
   async subcategoriesUpsert(input: {
     id?: string
@@ -1805,6 +2396,10 @@ export const commands = {
   }): Promise<{ subcategoryId: string }> {
     const invoke = await getInvoke()
     return invoke<{ subcategoryId: string }>('subcategories_upsert', { input })
+  },
+  async subcategoriesDelete(subcategoryId: string): Promise<{ ok: boolean }> {
+    const invoke = await getInvoke()
+    return invoke<{ ok: boolean }>('subcategories_delete', { input: { subcategoryId } })
   },
   async rulesList(): Promise<CategorizationRuleItem[]> {
     const invoke = await getInvoke()
@@ -1963,6 +2558,10 @@ export const commands = {
   async settingsAutoImportGet(): Promise<{ enabled: boolean }> {
     const invoke = await getInvoke()
     return invoke<{ enabled: boolean }>('settings_auto_import_get')
+  },
+  async settingsPickImportBasePath(currentPath?: string): Promise<string | null> {
+    const invoke = await getInvoke()
+    return invoke<string | null>('settings_pick_import_base_path', { currentPath })
   },
   async settingsAutoImportSet(enabled: boolean): Promise<{ enabled: boolean }> {
     const invoke = await getInvoke()

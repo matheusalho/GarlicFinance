@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension, ToSql};
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -9,12 +9,12 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::models::{
-    CanonicalTxInput, CategoryItem, CategoryTreeItem, CategoryUpsertInput, FeatureFlagsV1,
-    GoalAllocationItem, GoalInput, GoalListItem, ImportRunFileItem, ImportRunScope,
-    ImportRunSummaryItem, ManualBalanceSnapshotInput, ManualTransactionInput, MonthlyBudgetItem,
-    ObservabilityEventItem, OnboardingStateV1, RecurringTemplateInput, RecurringTemplateItem,
-    RuleListItem, RuleUpsertInput, SubcategoryItem, SubcategoryUpsertInput, TransactionsFilters,
-    UiPreferencesV1,
+    CanonicalTxInput, CategoryCatalogUsageItem, CategoryCatalogUsageResponse, CategoryItem,
+    CategoryTreeItem, CategoryUpsertInput, FeatureFlagsV1, GoalAllocationItem, GoalInput,
+    GoalListItem, ImportRunFileItem, ImportRunScope, ImportRunSummaryItem,
+    ManualBalanceSnapshotInput, ManualTransactionInput, MonthlyBudgetItem, ObservabilityEventItem,
+    OnboardingStateV1, RecurringTemplateInput, RecurringTemplateItem, RuleListItem,
+    RuleUpsertInput, SubcategoryItem, SubcategoryUpsertInput, TransactionsFilters, UiPreferencesV1,
 };
 
 const MAX_OBSERVABILITY_EVENTS: i64 = 5_000;
@@ -101,6 +101,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "006_import_runs",
         include_str!("../migrations/006_import_runs.sql"),
     ),
+    (
+        "007_category_kind_and_adjustment_flow",
+        include_str!("../migrations/007_category_kind_and_adjustment_flow.sql"),
+    ),
 ];
 
 pub fn init_database(conn: &Connection) -> Result<()> {
@@ -133,6 +137,7 @@ pub fn init_database(conn: &Connection) -> Result<()> {
     }
 
     seed_defaults(conn)?;
+    ensure_transaction_encoding_repair_once(conn)?;
     Ok(())
 }
 
@@ -146,18 +151,33 @@ fn seed_defaults(conn: &Connection) -> Result<()> {
         params!["btg", "Banco BTG Pactual", "BTG"],
     )?;
 
-    for (id, name, color) in [
-        ("alimentacao", "Alimentação", "#e07a5f"),
-        ("transporte", "Transporte", "#3d405b"),
-        ("moradia", "Moradia", "#81b29a"),
-        ("saude", "Saúde", "#f2cc8f"),
-        ("lazer", "Lazer", "#457b9d"),
-        ("investimentos", "Investimentos", "#2a9d8f"),
-        ("outros", "Outros", "#6f7d8c"),
+    for (id, name, color, kind) in [
+        ("alimentacao", "Alimentação", "#e07a5f", "expense"),
+        ("transporte", "Transporte", "#3d405b", "expense"),
+        ("moradia", "Moradia", "#81b29a", "expense"),
+        ("saude", "Saúde", "#f2cc8f", "expense"),
+        ("lazer", "Lazer", "#457b9d", "expense"),
+        ("investimentos", "Investimentos", "#2a9d8f", "expense"),
+        ("outros", "Outros", "#6f7d8c", "expense"),
+        ("salario_proventos", "Salário e Proventos", "#2a9d8f", "income"),
+        ("receitas_variaveis", "Receitas Variáveis", "#3ba86f", "income"),
+        ("encargos_juros", "Encargos e Juros", "#b56576", "expense"),
+        (
+            "transferencias_proprias",
+            "Transferências Próprias",
+            "#5e6472",
+            "neutral",
+        ),
+        (
+            "pagamentos_fatura",
+            "Pagamentos de Fatura",
+            "#6d597a",
+            "neutral",
+        ),
     ] {
         conn.execute(
-            "INSERT OR IGNORE INTO categories (id, name, color) VALUES (?1, ?2, ?3)",
-            params![id, name, color],
+            "INSERT OR IGNORE INTO categories (id, name, color, kind) VALUES (?1, ?2, ?3, ?4)",
+            params![id, name, color, kind],
         )?;
     }
 
@@ -239,12 +259,6 @@ pub fn default_onboarding_state() -> OnboardingStateV1 {
 
 pub fn default_feature_flags() -> FeatureFlagsV1 {
     FeatureFlagsV1 {
-        new_layout_enabled: true,
-        new_dashboard_enabled: true,
-        new_transactions_enabled: true,
-        new_planning_enabled: true,
-        new_settings_enabled: true,
-        onboarding_enabled: true,
         idle_tab_prefetch_enabled: true,
         v2_async_jobs_enabled: true,
     }
@@ -297,10 +311,15 @@ fn normalize_onboarding_state(input: OnboardingStateV1) -> OnboardingStateV1 {
         .steps_completed
         .into_iter()
         .filter_map(|step| {
-            let normalized = step.trim().to_ascii_lowercase();
+            let raw = step.trim().to_ascii_lowercase();
+            let normalized = if raw == "categorize" {
+                "categories_setup".to_string()
+            } else {
+                raw
+            };
             if !matches!(
                 normalized.as_str(),
-                "import" | "categorize" | "dashboard" | "projection"
+                "import" | "categories_setup" | "dashboard" | "projection"
             ) {
                 return None;
             }
@@ -814,6 +833,8 @@ pub fn upsert_source_file(
 }
 
 pub fn insert_transaction(conn: &Connection, tx: &CanonicalTxInput) -> Result<bool> {
+    let normalized_description_raw = normalize_text_encoding(&tx.description_raw);
+    let normalized_merchant = normalize_text_encoding(&tx.merchant_normalized);
     let now = Utc::now().to_rfc3339();
     let affected = conn.execute(
         "INSERT INTO transactions (
@@ -832,8 +853,8 @@ pub fn insert_transaction(conn: &Connection, tx: &CanonicalTxInput) -> Result<bo
             tx.competence_month,
             tx.amount_cents,
             tx.currency,
-            tx.description_raw,
-            tx.merchant_normalized,
+            normalized_description_raw,
+            normalized_merchant,
             tx.category_id,
             tx.subcategory_id,
             tx.flow_type,
@@ -845,13 +866,379 @@ pub fn insert_transaction(conn: &Connection, tx: &CanonicalTxInput) -> Result<bo
 }
 
 fn has_encoding_anomaly(text: &str) -> bool {
-    text.contains('\u{FFFD}') || text.contains("Ã") || text.contains("Â")
+    if text.trim().is_empty() {
+        return false;
+    }
+    text.contains('\u{FFFD}')
+        || text.contains("ï¿½")
+        || text.contains('\u{00C3}')
+        || text.contains('\u{00C2}')
+}
+
+fn text_quality_score(value: &str) -> i32 {
+    if value.is_empty() {
+        return -10_000;
+    }
+    let marker_penalty = value.matches('\u{00C3}').count() as i32
+        + value.matches('\u{00C2}').count() as i32
+        + value.matches('\u{FFFD}').count() as i32
+        + value.matches("ï¿½").count() as i32;
+    let symbol_penalty = value
+        .chars()
+        .filter(|ch| "£¤¦¨¬¯°±²³´µ¶·¸¹º»¼½¾¿".contains(*ch))
+        .count() as i32;
+    let c1_penalty = value
+        .chars()
+        .filter(|ch| {
+            let code = *ch as u32;
+            (0x80..=0x9F).contains(&code)
+        })
+        .count() as i32;
+    const ACCENTED_CHARS: &[char] = &[
+        '\u{00E1}', '\u{00E9}', '\u{00ED}', '\u{00F3}', '\u{00FA}', '\u{00E3}', '\u{00F5}',
+        '\u{00E7}', '\u{00C1}', '\u{00C9}', '\u{00CD}', '\u{00D3}', '\u{00DA}', '\u{00C3}',
+        '\u{00D5}', '\u{00C7}', '\u{00EA}', '\u{00CA}', '\u{00F4}', '\u{00D4}', '\u{00E2}',
+        '\u{00C2}', '\u{00E0}', '\u{00C0}', '\u{00EA}',
+    ];
+    let accent_bonus = value
+        .chars()
+        .filter(|ch| ACCENTED_CHARS.contains(ch))
+        .count() as i32;
+    let printable_bonus = value
+        .chars()
+        .filter(|ch| ch.is_ascii_graphic() || ch.is_alphanumeric() || ch.is_whitespace())
+        .count() as i32;
+    printable_bonus + (accent_bonus * 2)
+        - (marker_penalty * 6)
+        - (symbol_penalty * 5)
+        - (c1_penalty * 10)
+}
+
+fn to_title_case(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    let mut promoted = false;
+    for ch in value.chars() {
+        if !promoted && ch.is_alphabetic() {
+            output.extend(ch.to_uppercase());
+            promoted = true;
+        } else {
+            output.push(ch);
+        }
+    }
+    output
+}
+
+fn apply_case_style(original: &str, replacement: &str) -> String {
+    let letters = original
+        .chars()
+        .filter(|ch| ch.is_alphabetic())
+        .collect::<Vec<_>>();
+    if letters.is_empty() {
+        return replacement.to_string();
+    }
+    if letters.iter().all(|ch| ch.is_uppercase()) {
+        return replacement.to_uppercase();
+    }
+    if letters[0].is_uppercase() && letters.iter().skip(1).all(|ch| ch.is_lowercase()) {
+        return to_title_case(replacement);
+    }
+    replacement.to_string()
+}
+
+fn replace_case_insensitive_all(value: &str, broken: &str, repaired: &str) -> String {
+    if broken.trim().is_empty() {
+        return value.to_string();
+    }
+    let broken_lower = broken.to_lowercase();
+    if broken_lower.is_empty() {
+        return value.to_string();
+    }
+
+    let mut fixed = value.to_string();
+    loop {
+        let lowered = fixed.to_lowercase();
+        let Some(start) = lowered.find(&broken_lower) else {
+            break;
+        };
+        let end = start + broken_lower.len();
+        if end > fixed.len() || !fixed.is_char_boundary(start) || !fixed.is_char_boundary(end) {
+            break;
+        }
+        let original = &fixed[start..end];
+        let replacement = apply_case_style(original, repaired);
+        fixed.replace_range(start..end, &replacement);
+    }
+    fixed
+}
+
+fn apply_common_mojibake_replacements(value: &str) -> String {
+    let mut fixed = value.replace("ï¿½", "\u{FFFD}");
+    for (broken, repaired) in [
+        ("cart\u{FFFD}o", "cart\u{00E3}o"),
+        ("cart\u{FFFD}es", "cart\u{00F5}es"),
+        ("fatura do cart\u{FFFD}o", "fatura do cart\u{00E3}o"),
+        ("cartao de credito", "cart\u{00E3}o de cr\u{00E9}dito"),
+        ("cart\u{FFFD}o de cr\u{FFFD}dito", "cart\u{00E3}o de cr\u{00E9}dito"),
+        ("servi\u{FFFD}o", "servi\u{00E7}o"),
+        ("servi\u{FFFD}os", "servi\u{00E7}os"),
+        ("pe\u{FFFD}a", "pe\u{00E7}a"),
+        ("pe\u{FFFD}as", "pe\u{00E7}as"),
+        ("ag\u{FFFD}ncia", "ag\u{00EA}ncia"),
+        ("ag\u{FFFD}ncias", "ag\u{00EA}ncias"),
+        ("transfer\u{FFFD}ncia", "transfer\u{00EA}ncia"),
+        ("transfer\u{FFFD}ncias", "transfer\u{00EA}ncias"),
+        ("cr\u{FFFD}dito", "cr\u{00E9}dito"),
+        ("cr\u{FFFD}ditos", "cr\u{00E9}ditos"),
+        ("d\u{FFFD}bito", "d\u{00E9}bito"),
+        ("deb\u{FFFD}to", "d\u{00E9}bito"),
+        ("deb\u{FFFD}tos", "d\u{00E9}bitos"),
+        ("di\u{FFFD}rio", "di\u{00E1}rio"),
+        ("di\u{FFFD}rios", "di\u{00E1}rios"),
+        ("di\u{FFFD}ria", "di\u{00E1}ria"),
+        ("di\u{FFFD}rias", "di\u{00E1}rias"),
+        ("endere\u{FFFD}o", "endere\u{00E7}o"),
+        ("situa\u{FFFD}\u{FFFD}o", "situa\u{00E7}\u{00E3}o"),
+        ("n\u{FFFD}o", "n\u{00E3}o"),
+        ("s\u{FFFD}o", "s\u{00E3}o"),
+        ("na\u{FFFD}o", "n\u{00E3}o"),
+        ("n\u{FFFD}ao", "n\u{00E3}o"),
+        ("transa\u{FFFD}\u{FFFD}o", "transa\u{00E7}\u{00E3}o"),
+        ("descri\u{FFFD}\u{FFFD}o", "descri\u{00E7}\u{00E3}o"),
+        ("cart\u{00A3}o", "cart\u{00E3}o"),
+        ("cart\u{00A3}es", "cart\u{00F5}es"),
+        ("servi\u{00A7}o", "servi\u{00E7}o"),
+        ("servi\u{00A7}os", "servi\u{00E7}os"),
+        ("acess\u{00B3}rios", "acess\u{00F3}rios"),
+        ("n\u{00A3}o", "n\u{00E3}o"),
+        ("s\u{00A3}o", "s\u{00E3}o"),
+        ("cart\u{00C3}\u{00A3}o", "cart\u{00E3}o"),
+        ("cart\u{00C3}\u{00B5}es", "cart\u{00F5}es"),
+        ("servi\u{00C3}\u{00A7}o", "servi\u{00E7}o"),
+        ("servi\u{00C3}\u{00A7}os", "servi\u{00E7}os"),
+        ("ag\u{00C3}\u{00AA}ncia", "ag\u{00EA}ncia"),
+        ("ag\u{00C3}\u{00AA}ncias", "ag\u{00EA}ncias"),
+        ("transfer\u{00C3}\u{00AA}ncia", "transfer\u{00EA}ncia"),
+        ("transfer\u{00C3}\u{00AA}ncias", "transfer\u{00EA}ncias"),
+        ("cr\u{00C3}\u{00A9}dito", "cr\u{00E9}dito"),
+        ("cr\u{00C3}\u{00A9}ditos", "cr\u{00E9}ditos"),
+        ("d\u{00C3}\u{00A9}bito", "d\u{00E9}bito"),
+        ("di\u{00C3}\u{00A1}rio", "di\u{00E1}rio"),
+        ("di\u{00C3}\u{00A1}rios", "di\u{00E1}rios"),
+        ("di\u{00C3}\u{00A1}ria", "di\u{00E1}ria"),
+        ("di\u{00C3}\u{00A1}rias", "di\u{00E1}rias"),
+        ("endere\u{00C3}\u{00A7}o", "endere\u{00E7}o"),
+        ("situa\u{00C3}\u{00A7}\u{00C3}\u{00A3}o", "situa\u{00E7}\u{00E3}o"),
+        ("n\u{00C3}\u{00A3}o", "n\u{00E3}o"),
+        ("s\u{00C3}\u{00A3}o", "s\u{00E3}o"),
+    ] {
+        fixed = replace_case_insensitive_all(&fixed, broken, repaired);
+    }
+    fixed
+}
+
+fn try_redecode_latin1_utf8(value: &str) -> Option<String> {
+    let mut bytes = Vec::with_capacity(value.len());
+    for ch in value.chars() {
+        let code = ch as u32;
+        if code > 0xFF {
+            return None;
+        }
+        bytes.push(code as u8);
+    }
+    String::from_utf8(bytes).ok()
+}
+
+fn normalize_text_encoding(value: &str) -> String {
+    let mut best = apply_common_mojibake_replacements(&value.replace('\0', ""));
+    for _ in 0..4 {
+        let candidate = try_redecode_latin1_utf8(&best)
+            .map(|decoded| apply_common_mojibake_replacements(&decoded))
+            .unwrap_or_else(|| best.clone());
+        if text_quality_score(&candidate) <= text_quality_score(&best) {
+            break;
+        }
+        best = candidate;
+        if !has_encoding_anomaly(&best) {
+            break;
+        }
+    }
+    best.trim().to_string()
+}
+
+fn repair_existing_transaction_encoding(conn: &Connection) -> Result<usize> {
+    let mut stmt = conn.prepare("SELECT id, description_raw, merchant_normalized FROM transactions")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+
+    let mut updates: Vec<(i64, String, String)> = Vec::new();
+    for row in rows {
+        let (id, description_raw, merchant_normalized) = row?;
+        let normalized_description_raw = normalize_text_encoding(&description_raw);
+        let normalized_merchant = normalize_text_encoding(&merchant_normalized);
+        if normalized_description_raw != description_raw || normalized_merchant != merchant_normalized
+        {
+            updates.push((id, normalized_description_raw, normalized_merchant));
+        }
+    }
+    drop(stmt);
+
+    if updates.is_empty() {
+        return Ok(0);
+    }
+
+    let now = Utc::now().to_rfc3339();
+    for (id, description_raw, merchant_normalized) in updates.iter() {
+        conn.execute(
+            "UPDATE transactions
+             SET description_raw = ?1,
+                 merchant_normalized = ?2,
+                 updated_at = ?3
+             WHERE id = ?4",
+            params![description_raw, merchant_normalized, now, id],
+        )?;
+    }
+    Ok(updates.len())
+}
+
+fn repair_category_catalog_encoding(conn: &Connection) -> Result<usize> {
+    let mut repairs = 0usize;
+    let now = Utc::now().to_rfc3339();
+
+    let mut categories_stmt = conn.prepare("SELECT id, name FROM categories")?;
+    let categories = categories_stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let mut category_updates: Vec<(String, String)> = Vec::new();
+    for row in categories {
+        let (id, name) = row?;
+        let normalized = normalize_text_encoding(&name);
+        if normalized != name {
+            category_updates.push((id, normalized));
+        }
+    }
+    drop(categories_stmt);
+
+    for (id, name) in category_updates {
+        conn.execute(
+            "UPDATE categories
+             SET name = ?1
+             WHERE id = ?2",
+            params![name, id],
+        )?;
+        repairs += 1;
+    }
+
+    let mut subcategories_stmt = conn.prepare("SELECT id, name FROM subcategories")?;
+    let subcategories = subcategories_stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let mut subcategory_updates: Vec<(String, String)> = Vec::new();
+    for row in subcategories {
+        let (id, name) = row?;
+        let normalized = normalize_text_encoding(&name);
+        if normalized != name {
+            subcategory_updates.push((id, normalized));
+        }
+    }
+    drop(subcategories_stmt);
+
+    for (id, name) in subcategory_updates {
+        conn.execute(
+            "UPDATE subcategories
+             SET name = ?1
+             WHERE id = ?2",
+            params![name, id],
+        )?;
+        conn.execute(
+            "UPDATE categorization_rules
+             SET updated_at = ?1
+             WHERE subcategory_id = ?2",
+            params![now, id],
+        )?;
+        repairs += 1;
+    }
+
+    Ok(repairs)
+}
+
+fn has_any_encoding_anomaly(conn: &Connection) -> Result<bool> {
+    let mut tx_stmt = conn.prepare("SELECT description_raw, merchant_normalized FROM transactions")?;
+    let tx_rows = tx_stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    for row in tx_rows {
+        let (description_raw, merchant_normalized) = row?;
+        if has_encoding_anomaly(&description_raw) || has_encoding_anomaly(&merchant_normalized) {
+            return Ok(true);
+        }
+    }
+
+    let mut category_stmt = conn.prepare("SELECT name FROM categories")?;
+    let category_rows = category_stmt.query_map([], |row| row.get::<_, String>(0))?;
+    for row in category_rows {
+        if has_encoding_anomaly(&row?) {
+            return Ok(true);
+        }
+    }
+
+    let mut subcategory_stmt = conn.prepare("SELECT name FROM subcategories")?;
+    let subcategory_rows = subcategory_stmt.query_map([], |row| row.get::<_, String>(0))?;
+    for row in subcategory_rows {
+        if has_encoding_anomaly(&row?) {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
+}
+
+fn ensure_transaction_encoding_repair_once(conn: &Connection) -> Result<()> {
+    const REPAIR_MARKER_KEY: &str = "transactions_encoding_repair_v2_1_1_rc_final";
+    let already_repaired = conn
+        .query_row(
+            "SELECT 1 FROM app_settings WHERE key = ?1 LIMIT 1",
+            params![REPAIR_MARKER_KEY],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    let has_anomalies = has_any_encoding_anomaly(conn)?;
+    if already_repaired && !has_anomalies {
+        return Ok(());
+    }
+
+    let repaired_transactions = repair_existing_transaction_encoding(conn)?;
+    let repaired_catalog = repair_category_catalog_encoding(conn)?;
+    let rows_repaired = repaired_transactions + repaired_catalog;
+    conn.execute(
+        "INSERT OR REPLACE INTO app_settings (key, value_json, updated_at)
+         VALUES (?1, ?2, ?3)",
+        params![
+            REPAIR_MARKER_KEY,
+            json!({
+                "rowsRepaired": rows_repaired,
+                "repairedTransactions": repaired_transactions,
+                "repairedCatalogItems": repaired_catalog,
+                "reranAfterAnomalyDetection": already_repaired && has_anomalies
+            })
+            .to_string(),
+            Utc::now().to_rfc3339()
+        ],
+    )?;
+    Ok(())
 }
 
 pub fn refresh_transaction_payload_if_anomalous(
     conn: &Connection,
     tx: &CanonicalTxInput,
 ) -> Result<bool> {
+    let normalized_description_raw = normalize_text_encoding(&tx.description_raw);
+    let normalized_merchant = normalize_text_encoding(&tx.merchant_normalized);
     let existing: Option<(i64, String)> = conn
         .query_row(
             "SELECT id, description_raw
@@ -881,8 +1268,8 @@ pub fn refresh_transaction_payload_if_anomalous(
          WHERE id = ?6",
         params![
             tx.external_ref,
-            tx.description_raw,
-            tx.merchant_normalized,
+            normalized_description_raw,
+            normalized_merchant,
             tx.metadata_json,
             Utc::now().to_rfc3339(),
             id
@@ -896,6 +1283,8 @@ pub fn repair_transaction_encoding_from_source(
     conn: &Connection,
     tx: &CanonicalTxInput,
 ) -> Result<bool> {
+    let normalized_description_raw = normalize_text_encoding(&tx.description_raw);
+    let normalized_merchant = normalize_text_encoding(&tx.merchant_normalized);
     let mut stmt = conn.prepare(
         "SELECT id, dedup_fingerprint, description_raw
          FROM transactions
@@ -968,8 +1357,8 @@ pub fn repair_transaction_encoding_from_source(
             params![
                 target_fingerprint,
                 tx.external_ref,
-                tx.description_raw,
-                tx.merchant_normalized,
+                normalized_description_raw,
+                normalized_merchant,
                 tx.metadata_json,
                 now,
                 existing_id
@@ -1010,7 +1399,7 @@ pub fn list_transactions(
            AND (?5 IS NULL OR t.source_type = ?5)
            AND (?6 IS NULL OR (t.description_raw LIKE ?6 OR t.merchant_normalized LIKE ?6))
            AND (?7 IS NULL OR t.account_type = ?7)
-           AND (?8 IS NULL OR ?8 = 0 OR (t.flow_type IN ('income', 'expense') AND IFNULL(t.category_id, '') = ''))
+           AND (?8 IS NULL OR ?8 = 0 OR (t.flow_type IN ('income', 'expense', 'expense_adjustment') AND IFNULL(t.category_id, '') = ''))
          ORDER BY t.occurred_at DESC
          LIMIT ?9 OFFSET ?10",
     )?;
@@ -1044,7 +1433,9 @@ pub fn list_transactions(
                 category_name: row.get(9)?,
                 subcategory_id: row.get(10)?,
                 subcategory_name: row.get(11)?,
-                needs_review: (flow_type == "income" || flow_type == "expense")
+                needs_review: (flow_type == "income"
+                    || flow_type == "expense"
+                    || flow_type == "expense_adjustment")
                     && row.get::<_, String>(8)?.is_empty(),
             })
         },
@@ -1067,17 +1458,17 @@ pub fn transaction_totals(
         .map(|value| if value { 1_i64 } else { 0_i64 });
     let mut stmt = conn.prepare(
         "SELECT
-          IFNULL(SUM(CASE WHEN amount_cents > 0 THEN amount_cents ELSE 0 END), 0),
-          IFNULL(SUM(CASE WHEN amount_cents < 0 THEN amount_cents ELSE 0 END), 0)
+          IFNULL(SUM(CASE WHEN flow_type = 'income' THEN amount_cents ELSE 0 END), 0),
+          IFNULL(SUM(CASE WHEN flow_type IN ('expense', 'expense_adjustment') THEN amount_cents ELSE 0 END), 0)
          FROM transactions
          WHERE (?1 IS NULL OR occurred_at >= ?1)
            AND (?2 IS NULL OR occurred_at < date(?2, '+1 day'))
            AND (?3 IS NULL OR category_id = ?3)
-           AND ((?4 IS NULL AND flow_type <> 'balance_snapshot') OR (?4 IS NOT NULL AND flow_type = ?4))
+          AND ((?4 IS NULL AND flow_type IN ('income', 'expense', 'expense_adjustment')) OR (?4 IS NOT NULL AND flow_type = ?4))
            AND (?5 IS NULL OR source_type = ?5)
            AND (?6 IS NULL OR (description_raw LIKE ?6 OR merchant_normalized LIKE ?6))
            AND (?7 IS NULL OR account_type = ?7)
-           AND (?8 IS NULL OR ?8 = 0 OR (flow_type IN ('income', 'expense') AND IFNULL(category_id, '') = ''))",
+           AND (?8 IS NULL OR ?8 = 0 OR (flow_type IN ('income', 'expense', 'expense_adjustment') AND IFNULL(category_id, '') = ''))",
     )?;
 
     let (income, expense): (i64, i64) = stmt.query_row(
@@ -1116,7 +1507,7 @@ pub fn transaction_total_count(conn: &Connection, filters: &TransactionsFilters)
            AND (?5 IS NULL OR source_type = ?5)
            AND (?6 IS NULL OR (description_raw LIKE ?6 OR merchant_normalized LIKE ?6))
            AND (?7 IS NULL OR account_type = ?7)
-           AND (?8 IS NULL OR ?8 = 0 OR (flow_type IN ('income', 'expense') AND IFNULL(category_id, '') = ''))",
+           AND (?8 IS NULL OR ?8 = 0 OR (flow_type IN ('income', 'expense', 'expense_adjustment') AND IFNULL(category_id, '') = ''))",
     )?;
 
     let total_count: i64 = stmt.query_row(
@@ -1156,9 +1547,9 @@ pub fn list_transactions_review_queue(
            AND (?4 IS NULL OR (t.description_raw LIKE ?4 OR t.merchant_normalized LIKE ?4))
            AND (?5 IS NULL OR t.flow_type = ?5)
            AND (?6 IS NULL OR t.account_type = ?6)
-           AND t.flow_type IN ('income', 'expense')
+           AND t.flow_type IN ('income', 'expense', 'expense_adjustment')
            AND IFNULL(t.category_id, '') = ''
-         ORDER BY t.occurred_at DESC
+         ORDER BY ABS(t.amount_cents) DESC, t.occurred_at DESC, t.id DESC
          LIMIT ?7",
     )?;
 
@@ -1188,7 +1579,9 @@ pub fn list_transactions_review_queue(
                 category_name: row.get(9)?,
                 subcategory_id: row.get(10)?,
                 subcategory_name: row.get(11)?,
-                needs_review: (flow_type == "income" || flow_type == "expense")
+                needs_review: (flow_type == "income"
+                    || flow_type == "expense"
+                    || flow_type == "expense_adjustment")
                     && row.get::<_, String>(8)?.is_empty(),
             })
         },
@@ -1215,7 +1608,7 @@ pub fn transaction_review_queue_total_count(
            AND (?4 IS NULL OR (description_raw LIKE ?4 OR merchant_normalized LIKE ?4))
            AND (?5 IS NULL OR flow_type = ?5)
            AND (?6 IS NULL OR account_type = ?6)
-           AND flow_type IN ('income', 'expense')
+           AND flow_type IN ('income', 'expense', 'expense_adjustment')
            AND IFNULL(category_id, '') = ''",
     )?;
 
@@ -1239,6 +1632,15 @@ pub fn update_transactions_category(
     category_id: &str,
     subcategory_id: &str,
 ) -> Result<usize> {
+    let normalized_ids: Vec<i64> = transaction_ids
+        .iter()
+        .copied()
+        .filter(|value| *value > 0)
+        .collect();
+    if normalized_ids.is_empty() {
+        return Ok(0);
+    }
+
     let mut effective_category_id = category_id.trim().to_string();
     let effective_subcategory_id = subcategory_id.trim().to_string();
 
@@ -1262,26 +1664,71 @@ pub fn update_transactions_category(
         }
     }
 
-    let mut updated = 0;
-    let now = Utc::now().to_rfc3339();
-    for tx_id in transaction_ids {
-        let affected = conn.execute(
-            "UPDATE transactions
-             SET category_id = NULLIF(?1, ''),
-                 subcategory_id = NULLIF(?2, ''),
-                 updated_at = ?3
-             WHERE id = ?4",
-            params![effective_category_id, effective_subcategory_id, now, tx_id],
-        )?;
-        updated += affected;
+    let selected_category_kind = if effective_category_id.is_empty() {
+        None
+    } else {
+        Some(read_category_kind(conn, &effective_category_id)?)
+    };
+
+    let placeholders = vec!["?"; normalized_ids.len()].join(", ");
+    let flow_query = format!(
+        "SELECT id, flow_type FROM transactions WHERE id IN ({})",
+        placeholders
+    );
+    let mut flow_stmt = conn.prepare(&flow_query)?;
+    let flow_rows = flow_stmt.query_map(params_from_iter(normalized_ids.iter()), |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+    })?;
+
+    let mut flow_by_id: HashMap<i64, String> = HashMap::new();
+    for row in flow_rows {
+        let (id, flow_type) = row?;
+        flow_by_id.insert(id, flow_type);
     }
+    drop(flow_stmt);
+
+    let mut validated_ids: Vec<i64> = Vec::new();
+    for tx_id in normalized_ids {
+        let Some(flow_type) = flow_by_id.get(&tx_id) else {
+            continue;
+        };
+
+        validate_category_kind_for_flow(
+            flow_type,
+            effective_category_id.as_str(),
+            selected_category_kind.as_deref(),
+        )?;
+        validated_ids.push(tx_id);
+    }
+
+    if validated_ids.is_empty() {
+        return Ok(0);
+    }
+
+    let update_placeholders = vec!["?"; validated_ids.len()].join(", ");
+    let update_query = format!(
+        "UPDATE transactions
+         SET category_id = NULLIF(?1, ''),
+             subcategory_id = NULLIF(?2, ''),
+             updated_at = ?3
+         WHERE id IN ({})",
+        update_placeholders
+    );
+
+    let now = Utc::now().to_rfc3339();
+    let mut update_params: Vec<&dyn ToSql> = vec![&effective_category_id, &effective_subcategory_id, &now];
+    for tx_id in &validated_ids {
+        update_params.push(tx_id);
+    }
+
+    let updated = conn.execute(&update_query, update_params.as_slice())?;
     Ok(updated)
 }
 
 pub fn list_categories(conn: &Connection) -> Result<Vec<CategoryTreeItem>> {
     let mut stmt = conn.prepare(
         "SELECT
-           c.id, c.name, c.color,
+           c.id, c.name, c.color, c.kind,
            s.id, s.category_id, s.name
          FROM categories c
          LEFT JOIN subcategories s ON s.category_id = c.id
@@ -1294,10 +1741,11 @@ pub fn list_categories(conn: &Connection) -> Result<Vec<CategoryTreeItem>> {
                 id: row.get(0)?,
                 name: row.get(1)?,
                 color: row.get(2)?,
+                kind: row.get(3)?,
             },
-            row.get::<_, Option<String>>(3)?,
             row.get::<_, Option<String>>(4)?,
             row.get::<_, Option<String>>(5)?,
+            row.get::<_, Option<String>>(6)?,
         ))
     })?;
 
@@ -1314,6 +1762,7 @@ pub fn list_categories(conn: &Connection) -> Result<Vec<CategoryTreeItem>> {
                 id: category.id.clone(),
                 name: category.name,
                 color: category.color,
+                kind: category.kind,
                 subcategories: Vec::new(),
             });
             let new_index = output.len() - 1;
@@ -1338,6 +1787,11 @@ pub fn upsert_category(conn: &Connection, input: &CategoryUpsertInput) -> Result
     if name.is_empty() {
         return Err(anyhow!("O nome da categoria é obrigatório."));
     }
+    let kind = normalize_category_kind(&input.kind)?;
+
+    if category_name_exists_elsewhere(conn, name, input.id.as_deref())? {
+        return Err(anyhow!("Ja existe uma categoria com este nome."));
+    }
 
     let color = normalize_color(&input.color);
     if let Some(category_id) = input
@@ -1347,8 +1801,8 @@ pub fn upsert_category(conn: &Connection, input: &CategoryUpsertInput) -> Result
         .filter(|id| !id.is_empty())
     {
         let affected = conn.execute(
-            "UPDATE categories SET name = ?1, color = ?2 WHERE id = ?3",
-            params![name, color, category_id],
+            "UPDATE categories SET name = ?1, color = ?2, kind = ?3 WHERE id = ?4",
+            params![name, color, kind, category_id],
         )?;
         if affected == 0 {
             return Err(anyhow!("Categoria não encontrada para atualização."));
@@ -1360,8 +1814,8 @@ pub fn upsert_category(conn: &Connection, input: &CategoryUpsertInput) -> Result
     let category_id = ensure_unique_id(conn, "categories", &base_id)?;
 
     conn.execute(
-        "INSERT INTO categories (id, name, color) VALUES (?1, ?2, ?3)",
-        params![category_id, name, color],
+        "INSERT INTO categories (id, name, color, kind) VALUES (?1, ?2, ?3, ?4)",
+        params![category_id, name, color, kind],
     )?;
 
     Ok(category_id)
@@ -1379,6 +1833,12 @@ pub fn upsert_subcategory(conn: &Connection, input: &SubcategoryUpsertInput) -> 
     }
     if !category_exists(conn, category_id)? {
         return Err(anyhow!("Categoria nao encontrada."));
+    }
+    if subcategory_name_exists_in_category_elsewhere(conn, category_id, name, input.id.as_deref())?
+    {
+        return Err(anyhow!(
+            "Ja existe uma subcategoria com este nome na categoria selecionada."
+        ));
     }
 
     if let Some(subcategory_id) = input
@@ -1419,6 +1879,185 @@ pub fn upsert_subcategory(conn: &Connection, input: &SubcategoryUpsertInput) -> 
     Ok(subcategory_id)
 }
 
+pub fn category_catalog_usage(conn: &Connection) -> Result<CategoryCatalogUsageResponse> {
+    let mut category_usage: HashMap<String, CategoryCatalogUsageItem> = HashMap::new();
+    let mut subcategory_usage: HashMap<String, CategoryCatalogUsageItem> = HashMap::new();
+
+    let mut category_stmt = conn.prepare("SELECT id FROM categories")?;
+    let category_ids = category_stmt
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for category_id in category_ids {
+        category_usage.entry(category_id).or_default();
+    }
+
+    let mut subcategory_stmt = conn.prepare("SELECT id, category_id FROM subcategories")?;
+    let subcategory_rows = subcategory_stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (subcategory_id, category_id) in subcategory_rows {
+        subcategory_usage.entry(subcategory_id).or_default();
+        category_usage
+            .entry(category_id)
+            .or_default()
+            .subcategory_count += 1;
+    }
+
+    accumulate_usage_counts(
+        conn,
+        "SELECT category_id, COUNT(1)
+         FROM transactions
+         WHERE IFNULL(category_id, '') <> ''
+         GROUP BY category_id",
+        &mut category_usage,
+        |item, count| item.transaction_count = count,
+    )?;
+    accumulate_usage_counts(
+        conn,
+        "SELECT category_id, COUNT(1)
+         FROM categorization_rules
+         WHERE IFNULL(category_id, '') <> ''
+         GROUP BY category_id",
+        &mut category_usage,
+        |item, count| item.rule_count = count,
+    )?;
+    accumulate_usage_counts(
+        conn,
+        "SELECT category_id, COUNT(1)
+         FROM recurring_templates
+         WHERE IFNULL(category_id, '') <> ''
+         GROUP BY category_id",
+        &mut category_usage,
+        |item, count| item.recurring_count = count,
+    )?;
+    accumulate_usage_counts(
+        conn,
+        "SELECT category_id, COUNT(1)
+         FROM monthly_budgets
+         WHERE IFNULL(category_id, '') <> ''
+         GROUP BY category_id",
+        &mut category_usage,
+        |item, count| item.budget_count = count,
+    )?;
+
+    accumulate_usage_counts(
+        conn,
+        "SELECT subcategory_id, COUNT(1)
+         FROM transactions
+         WHERE IFNULL(subcategory_id, '') <> ''
+         GROUP BY subcategory_id",
+        &mut subcategory_usage,
+        |item, count| item.transaction_count = count,
+    )?;
+    accumulate_usage_counts(
+        conn,
+        "SELECT subcategory_id, COUNT(1)
+         FROM categorization_rules
+         WHERE IFNULL(subcategory_id, '') <> ''
+         GROUP BY subcategory_id",
+        &mut subcategory_usage,
+        |item, count| item.rule_count = count,
+    )?;
+    accumulate_usage_counts(
+        conn,
+        "SELECT subcategory_id, COUNT(1)
+         FROM recurring_templates
+         WHERE IFNULL(subcategory_id, '') <> ''
+         GROUP BY subcategory_id",
+        &mut subcategory_usage,
+        |item, count| item.recurring_count = count,
+    )?;
+    accumulate_usage_counts(
+        conn,
+        "SELECT subcategory_id, COUNT(1)
+         FROM monthly_budgets
+         WHERE IFNULL(subcategory_id, '') <> ''
+         GROUP BY subcategory_id",
+        &mut subcategory_usage,
+        |item, count| item.budget_count = count,
+    )?;
+
+    Ok(CategoryCatalogUsageResponse {
+        categories: category_usage,
+        subcategories: subcategory_usage,
+    })
+}
+
+pub fn delete_category(conn: &Connection, category_id: &str) -> Result<usize> {
+    let normalized_id = category_id.trim();
+    if normalized_id.is_empty() {
+        return Err(anyhow!("Categoria invalida para exclusao."));
+    }
+    if !category_exists(conn, normalized_id)? {
+        return Err(anyhow!("Categoria nao encontrada."));
+    }
+
+    let usage = category_catalog_usage(conn)?;
+    let item = usage
+        .categories
+        .get(normalized_id)
+        .cloned()
+        .unwrap_or_default();
+    if item.subcategory_count > 0
+        || item.transaction_count > 0
+        || item.rule_count > 0
+        || item.recurring_count > 0
+        || item.budget_count > 0
+    {
+        return Err(anyhow!(build_category_delete_blocker_message(
+            "categoria",
+            &item,
+            true,
+        )));
+    }
+
+    Ok(conn.execute(
+        "DELETE FROM categories WHERE id = ?1",
+        params![normalized_id],
+    )?)
+}
+
+pub fn delete_subcategory(conn: &Connection, subcategory_id: &str) -> Result<usize> {
+    let normalized_id = subcategory_id.trim();
+    if normalized_id.is_empty() {
+        return Err(anyhow!("Subcategoria invalida para exclusao."));
+    }
+
+    let exists: i64 = conn.query_row(
+        "SELECT COUNT(1) FROM subcategories WHERE id = ?1",
+        params![normalized_id],
+        |row| row.get(0),
+    )?;
+    if exists == 0 {
+        return Err(anyhow!("Subcategoria nao encontrada."));
+    }
+
+    let usage = category_catalog_usage(conn)?;
+    let item = usage
+        .subcategories
+        .get(normalized_id)
+        .cloned()
+        .unwrap_or_default();
+    if item.transaction_count > 0
+        || item.rule_count > 0
+        || item.recurring_count > 0
+        || item.budget_count > 0
+    {
+        return Err(anyhow!(build_category_delete_blocker_message(
+            "subcategoria",
+            &item,
+            false,
+        )));
+    }
+
+    Ok(conn.execute(
+        "DELETE FROM subcategories WHERE id = ?1",
+        params![normalized_id],
+    )?)
+}
+
 pub fn category_exists(conn: &Connection, category_id: &str) -> Result<bool> {
     let count: i64 = conn.query_row(
         "SELECT COUNT(1) FROM categories WHERE id = ?1",
@@ -1426,6 +2065,18 @@ pub fn category_exists(conn: &Connection, category_id: &str) -> Result<bool> {
         |row| row.get(0),
     )?;
     Ok(count > 0)
+}
+
+pub fn read_category_kind(conn: &Connection, category_id: &str) -> Result<String> {
+    let kind: Option<String> = conn
+        .query_row(
+            "SELECT kind FROM categories WHERE id = ?1 LIMIT 1",
+            params![category_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let kind = kind.ok_or_else(|| anyhow!("Categoria informada nao existe."))?;
+    normalize_category_kind(&kind)
 }
 
 pub fn subcategory_belongs_to_category(
@@ -1442,6 +2093,53 @@ pub fn subcategory_belongs_to_category(
         |row| row.get(0),
     )?;
     Ok(count > 0)
+}
+
+fn expected_category_kind_for_flow(flow_type: &str) -> Option<&'static str> {
+    match flow_type {
+        "income" => Some("income"),
+        "expense" | "expense_adjustment" => Some("expense"),
+        "transfer" | "credit_card_payment" => Some("neutral"),
+        _ => None,
+    }
+}
+
+pub fn validate_category_kind_for_flow(
+    flow_type: &str,
+    category_id: &str,
+    selected_category_kind: Option<&str>,
+) -> Result<()> {
+    let normalized_flow = flow_type.trim();
+    let has_category = !category_id.trim().is_empty();
+
+    if normalized_flow == "balance_snapshot" && has_category {
+        return Err(anyhow!(
+            "Snapshots de saldo nao podem receber categoria ou subcategoria."
+        ));
+    }
+
+    if !has_category {
+        return Ok(());
+    }
+
+    let expected_kind = expected_category_kind_for_flow(normalized_flow).ok_or_else(|| {
+        anyhow!("Fluxo informado nao aceita categorizacao para a operacao solicitada.")
+    })?;
+    let selected_kind = selected_category_kind.unwrap_or("expense");
+    if selected_kind != expected_kind {
+        let expected_label = match expected_kind {
+            "income" => "entrada",
+            "expense" => "saida",
+            "neutral" => "neutra",
+            _ => expected_kind,
+        };
+        return Err(anyhow!(
+            "Categoria incompatível com o fluxo. Este lançamento exige categoria de natureza {}.",
+            expected_label
+        ));
+    }
+
+    Ok(())
 }
 
 pub fn goal_exists(conn: &Connection, goal_id: i64) -> Result<bool> {
@@ -1474,6 +2172,110 @@ fn ensure_unique_id(conn: &Connection, table: &str, requested_base: &str) -> Res
     }
 }
 
+fn category_name_exists_elsewhere(
+    conn: &Connection,
+    name: &str,
+    ignore_id: Option<&str>,
+) -> Result<bool> {
+    let count: i64 = if let Some(category_id) = ignore_id.map(str::trim).filter(|id| !id.is_empty())
+    {
+        conn.query_row(
+            "SELECT COUNT(1)
+             FROM categories
+             WHERE LOWER(name) = LOWER(?1)
+               AND id <> ?2",
+            params![name, category_id],
+            |row| row.get(0),
+        )?
+    } else {
+        conn.query_row(
+            "SELECT COUNT(1) FROM categories WHERE LOWER(name) = LOWER(?1)",
+            params![name],
+            |row| row.get(0),
+        )?
+    };
+    Ok(count > 0)
+}
+
+fn subcategory_name_exists_in_category_elsewhere(
+    conn: &Connection,
+    category_id: &str,
+    name: &str,
+    ignore_id: Option<&str>,
+) -> Result<bool> {
+    let count: i64 =
+        if let Some(subcategory_id) = ignore_id.map(str::trim).filter(|id| !id.is_empty()) {
+            conn.query_row(
+                "SELECT COUNT(1)
+             FROM subcategories
+             WHERE category_id = ?1
+               AND LOWER(name) = LOWER(?2)
+               AND id <> ?3",
+                params![category_id, name, subcategory_id],
+                |row| row.get(0),
+            )?
+        } else {
+            conn.query_row(
+                "SELECT COUNT(1)
+             FROM subcategories
+             WHERE category_id = ?1
+               AND LOWER(name) = LOWER(?2)",
+                params![category_id, name],
+                |row| row.get(0),
+            )?
+        };
+    Ok(count > 0)
+}
+
+fn accumulate_usage_counts<F>(
+    conn: &Connection,
+    sql: &str,
+    target: &mut HashMap<String, CategoryCatalogUsageItem>,
+    mut apply: F,
+) -> Result<()>
+where
+    F: FnMut(&mut CategoryCatalogUsageItem, i64),
+{
+    let mut stmt = conn.prepare(sql)?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    })?;
+    for row in rows {
+        let (id, count) = row?;
+        let entry = target.entry(id).or_default();
+        apply(entry, count);
+    }
+    Ok(())
+}
+
+fn build_category_delete_blocker_message(
+    label: &str,
+    item: &CategoryCatalogUsageItem,
+    include_subcategories: bool,
+) -> String {
+    let mut blockers: Vec<String> = Vec::new();
+    if include_subcategories && item.subcategory_count > 0 {
+        blockers.push(format!("{} subcategoria(s)", item.subcategory_count));
+    }
+    if item.transaction_count > 0 {
+        blockers.push(format!("{} transação(ões)", item.transaction_count));
+    }
+    if item.rule_count > 0 {
+        blockers.push(format!("{} regra(s)", item.rule_count));
+    }
+    if item.recurring_count > 0 {
+        blockers.push(format!("{} recorrência(s)", item.recurring_count));
+    }
+    if item.budget_count > 0 {
+        blockers.push(format!("{} orçamento(s)", item.budget_count));
+    }
+    format!(
+        "Nao foi possivel excluir a {} porque ela ainda esta vinculada a {}.",
+        label,
+        blockers.join(", ")
+    )
+}
+
 fn id_exists(conn: &Connection, table: &str, id: &str) -> Result<bool> {
     let sql = match table {
         "categories" => "SELECT COUNT(1) FROM categories WHERE id = ?1",
@@ -1496,6 +2298,17 @@ fn normalize_color(raw_color: &str) -> String {
         return color.to_lowercase();
     }
     "#6f7d8c".to_string()
+}
+
+fn normalize_category_kind(raw_kind: &str) -> Result<String> {
+    let kind = raw_kind.trim().to_ascii_lowercase();
+    if matches!(kind.as_str(), "income" | "expense" | "neutral") {
+        Ok(kind)
+    } else {
+        Err(anyhow!(
+            "Natureza da categoria invalida. Use income, expense ou neutral."
+        ))
+    }
 }
 
 fn normalize_slug(raw: &str) -> String {
@@ -2080,31 +2893,29 @@ fn budget_spent_cents(
     subcategory_id: &str,
 ) -> Result<i64> {
     if subcategory_id.is_empty() {
-        let spent: i64 = conn.query_row(
-            "SELECT IFNULL(ABS(SUM(amount_cents)), 0)
+        let net_expense: i64 = conn.query_row(
+            "SELECT IFNULL(SUM(amount_cents), 0)
              FROM transactions
              WHERE competence_month = ?1
-               AND flow_type = 'expense'
-               AND amount_cents < 0
+               AND flow_type IN ('expense', 'expense_adjustment')
                AND IFNULL(category_id, '') = ?2",
             params![month, category_id],
             |row| row.get(0),
         )?;
-        return Ok(spent);
+        return Ok((-net_expense).max(0));
     }
 
-    let spent: i64 = conn.query_row(
-        "SELECT IFNULL(ABS(SUM(amount_cents)), 0)
+    let net_expense: i64 = conn.query_row(
+        "SELECT IFNULL(SUM(amount_cents), 0)
          FROM transactions
          WHERE competence_month = ?1
-           AND flow_type = 'expense'
-           AND amount_cents < 0
+           AND flow_type IN ('expense', 'expense_adjustment')
            AND IFNULL(category_id, '') = ?2
            AND IFNULL(subcategory_id, '') = ?3",
         params![month, category_id, subcategory_id],
         |row| row.get(0),
     )?;
-    Ok(spent)
+    Ok((-net_expense).max(0))
 }
 
 pub fn list_monthly_budgets(conn: &Connection, month: &str) -> Result<Vec<MonthlyBudgetItem>> {
@@ -2268,7 +3079,7 @@ pub fn account_pending_review_count(conn: &Connection, account_type: &str) -> Re
         "SELECT IFNULL(COUNT(1), 0)
          FROM transactions
          WHERE account_type = ?1
-           AND flow_type IN ('income', 'expense')
+           AND flow_type IN ('income', 'expense', 'expense_adjustment')
            AND IFNULL(category_id, '') = ''",
         params![account_type],
         |row| row.get(0),
@@ -2281,12 +3092,14 @@ mod tests {
     use super::{
         account_non_snapshot_total_after, account_non_snapshot_total_in_period,
         account_non_snapshot_total_until, account_pending_review_count, append_observability_event,
-        complete_import_run, create_import_run, init_database, insert_import_run_file,
-        insert_manual_balance_snapshot, latest_balance_snapshot_for_account, list_error_trail,
+        category_catalog_usage, complete_import_run, create_import_run, delete_category,
+        delete_subcategory, init_database, insert_import_run_file, insert_manual_balance_snapshot,
+        insert_transaction, latest_balance_snapshot_for_account, list_error_trail,
         list_import_runs, list_latest_import_run_files, list_monthly_budgets, list_transactions,
-        list_transactions_review_queue, prune_old_backups,
+        list_transactions_review_queue, prune_old_backups, read_feature_flags,
         refresh_transaction_payload_if_anomalous, repair_transaction_encoding_from_source,
-        transaction_review_queue_total_count, transaction_total_count, upsert_monthly_budget,
+        transaction_review_queue_total_count, transaction_total_count, transaction_totals, MIGRATIONS,
+        upsert_monthly_budget, write_feature_flags,
     };
     use crate::models::{
         CanonicalTxInput, ImportRunFileItem, ImportRunScope, ManualBalanceSnapshotInput,
@@ -2294,6 +3107,7 @@ mod tests {
     };
     use chrono::Utc;
     use rusqlite::{params, Connection};
+    use serde_json::Value;
     use std::fs;
     use tempfile::tempdir;
 
@@ -2374,6 +3188,10 @@ mod tests {
             flow_type: "expense".to_string(),
             metadata_json: "{}".to_string(),
         }
+    }
+
+    fn decode_latin1(bytes: &[u8]) -> String {
+        bytes.iter().map(|value| *value as char).collect()
     }
 
     #[test]
@@ -2538,6 +3356,69 @@ mod tests {
     }
 
     #[test]
+    fn transaction_totals_default_to_income_and_expense_only() {
+        let conn = Connection::open_in_memory().expect("failed to open sqlite");
+        init_database(&conn).expect("failed to init database");
+
+        insert_seed_transaction(
+            &conn,
+            "totals_income",
+            "manual",
+            "2026-02-01T10:00:00",
+            100_000,
+            "income",
+            None,
+            "Salario",
+        );
+        insert_seed_transaction(
+            &conn,
+            "totals_expense",
+            "manual",
+            "2026-02-02T10:00:00",
+            -40_000,
+            "expense",
+            None,
+            "Mercado",
+        );
+        insert_seed_transaction(
+            &conn,
+            "totals_transfer",
+            "manual",
+            "2026-02-03T10:00:00",
+            -30_000,
+            "transfer",
+            None,
+            "Transferencia entre contas",
+        );
+        insert_seed_transaction(
+            &conn,
+            "totals_card_payment",
+            "manual",
+            "2026-02-04T10:00:00",
+            -20_000,
+            "credit_card_payment",
+            None,
+            "Pagamento de fatura",
+        );
+        insert_seed_transaction(
+            &conn,
+            "totals_snapshot",
+            "manual",
+            "2026-02-05T10:00:00",
+            150_000,
+            "balance_snapshot",
+            None,
+            "Snapshot",
+        );
+
+        let filters = default_filters();
+        let totals = transaction_totals(&conn, &filters).expect("failed to compute totals");
+        assert_eq!(totals.income_cents, 100_000);
+        assert_eq!(totals.expense_cents, -40_000);
+        assert_eq!(totals.net_cents, 60_000);
+    }
+
+    #[test]
     fn review_queue_applies_filters_limit_and_total_count() {
         let conn = Connection::open_in_memory().expect("failed to open sqlite");
         init_database(&conn).expect("failed to init database");
@@ -2602,6 +3483,16 @@ mod tests {
             None,
             "Uber Nubank",
         );
+        insert_seed_transaction(
+            &conn,
+            "rq_7",
+            "manual",
+            "2026-01-09T12:00:00",
+            -6_000,
+            "expense",
+            None,
+            "Uber Viagem",
+        );
 
         let mut filters = default_filters();
         filters.start_date = Some("2026-01-01".to_string());
@@ -2617,10 +3508,11 @@ mod tests {
         let total_count =
             transaction_review_queue_total_count(&conn, &filters).expect("failed to count queue");
 
-        assert_eq!(total_count, 2);
+        assert_eq!(total_count, 3);
         assert_eq!(first_page.len(), 1);
-        assert_eq!(first_page[0].description_raw, "Uber Aeroporto");
-        assert_eq!(full_page.len(), 2);
+        assert_eq!(first_page[0].description_raw, "Uber Viagem");
+        assert_eq!(full_page.len(), 3);
+        assert_eq!(full_page[1].description_raw, "Uber Aeroporto");
         assert!(full_page.iter().all(|item| item.needs_review));
     }
 
@@ -2663,6 +3555,60 @@ mod tests {
             )
             .expect("failed to read updated description");
         assert_eq!(description, "Fatura do cartao BTG");
+    }
+
+    #[test]
+    fn insert_transaction_normalizes_description_and_merchant_encoding() {
+        let conn = Connection::open_in_memory().expect("failed to open sqlite");
+        init_database(&conn).expect("failed to init database");
+
+        let mojibake = decode_latin1(b"Fatura do cart\xc3\x83\xc2\xa3o BTG Pactual");
+        let tx = CanonicalTxInput {
+            source_type: "btg_checking_xls".to_string(),
+            source_file_hash: "encoding_seed_hash".to_string(),
+            external_ref: "".to_string(),
+            dedup_fingerprint: "encoding_seed_fp".to_string(),
+            account_type: "checking".to_string(),
+            occurred_at: "2026-03-01T12:00:00".to_string(),
+            competence_month: "2026-03".to_string(),
+            amount_cents: -41828,
+            currency: "BRL".to_string(),
+            description_raw: mojibake.clone(),
+            merchant_normalized: mojibake.to_lowercase(),
+            category_id: "".to_string(),
+            subcategory_id: "".to_string(),
+            flow_type: "expense".to_string(),
+            metadata_json: "{}".to_string(),
+        };
+        let inserted = insert_transaction(&conn, &tx).expect("insert should succeed");
+        assert!(inserted);
+
+        let (description, merchant): (String, String) = conn
+            .query_row(
+                "SELECT description_raw, merchant_normalized
+                 FROM transactions
+                 WHERE dedup_fingerprint = 'encoding_seed_fp'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("failed to read normalized row");
+
+        assert!(
+            !description.contains('\u{FFFD}'),
+            "description should not keep replacement markers"
+        );
+        assert!(
+            !merchant.contains('\u{FFFD}'),
+            "merchant should not keep replacement markers"
+        );
+        assert!(
+            description.to_lowercase().contains("cart"),
+            "description should preserve merchant context"
+        );
+        assert!(
+            merchant.contains("btg pactual"),
+            "merchant should preserve target establishment"
+        );
     }
 
     #[test]
@@ -2780,8 +3726,9 @@ mod tests {
             })
             .expect("failed to count migrations");
         assert_eq!(
-            migration_count, 6,
-            "expected 001, 002, 003, 004, 005 and 006 to be registered"
+            migration_count,
+            MIGRATIONS.len() as i64,
+            "expected all migrations (001-007) to be registered"
         );
 
         let allocation_count: i64 = conn
@@ -2897,7 +3844,7 @@ mod tests {
                 row.get(0)
             })
             .expect("failed to count schema_migrations");
-        assert_eq!(migration_count, 6);
+        assert_eq!(migration_count, MIGRATIONS.len() as i64);
 
         let has_005: i64 = conn
             .query_row(
@@ -2916,6 +3863,15 @@ mod tests {
             )
             .expect("failed to verify 006 migration");
         assert_eq!(has_006, 1);
+
+        let has_007: i64 = conn
+            .query_row(
+                "SELECT COUNT(1) FROM schema_migrations WHERE version = '007_category_kind_and_adjustment_flow'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("failed to verify 007 migration");
+        assert_eq!(has_007, 1);
 
         let tx_count: i64 = conn
             .query_row(
@@ -2966,6 +3922,54 @@ mod tests {
         )
         .expect("failed to write observability event after upgrade");
         assert!(event_id > 0);
+    }
+
+    #[test]
+    fn read_feature_flags_accepts_legacy_payload_and_write_sanitizes_shape() {
+        let conn = Connection::open_in_memory().expect("failed to open sqlite");
+        init_database(&conn).expect("failed to init database");
+
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT OR REPLACE INTO app_settings (key, value_json, updated_at) VALUES (?1, ?2, ?3)",
+            params![
+                "feature_flags_v1",
+                r#"{"newLayoutEnabled":false,"newSettingsEnabled":false,"v2AsyncJobsEnabled":false}"#,
+                now
+            ],
+        )
+        .expect("failed to seed legacy feature flags payload");
+
+        let flags = read_feature_flags(&conn).expect("failed to read feature flags");
+        assert!(
+            flags.idle_tab_prefetch_enabled,
+            "missing idle flag in legacy payload should fallback to default"
+        );
+        assert!(
+            !flags.v2_async_jobs_enabled,
+            "explicit V2 flag from legacy payload should be preserved"
+        );
+
+        write_feature_flags(&conn, flags).expect("failed to persist normalized feature flags");
+        let stored: String = conn
+            .query_row(
+                "SELECT value_json FROM app_settings WHERE key = 'feature_flags_v1' LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("failed to read normalized feature flags payload");
+        let parsed: Value =
+            serde_json::from_str(&stored).expect("normalized feature flags should be valid json");
+        let object = parsed
+            .as_object()
+            .expect("normalized feature flags should persist as json object");
+        assert_eq!(object.len(), 2);
+        assert!(object.contains_key("idleTabPrefetchEnabled"));
+        assert!(object.contains_key("v2AsyncJobsEnabled"));
+        assert!(
+            !object.contains_key("newLayoutEnabled") && !object.contains_key("newSettingsEnabled"),
+            "legacy transition flags should not remain in normalized payload"
+        );
     }
 
     #[test]
@@ -3190,6 +4194,120 @@ mod tests {
     }
 
     #[test]
+    fn category_catalog_usage_counts_links_and_blocks_category_delete() {
+        let conn = Connection::open_in_memory().expect("failed to open sqlite");
+        init_database(&conn).expect("failed to init database");
+        let now = Utc::now().to_rfc3339();
+
+        conn.execute(
+            "INSERT INTO categories (id, name, color) VALUES ('teste_cat', 'Teste', '#123456')",
+            [],
+        )
+        .expect("failed to insert category");
+        conn.execute(
+            "INSERT INTO subcategories (id, category_id, name) VALUES ('teste_sub', 'teste_cat', 'Filha')",
+            [],
+        )
+        .expect("failed to insert subcategory");
+        conn.execute(
+            "INSERT INTO categorization_rules (
+                source_type, direction, merchant_pattern, amount_min_cents, amount_max_cents,
+                category_id, subcategory_id, confidence, usage_count, created_at, updated_at
+            ) VALUES (
+                'manual', 'expense', 'teste', NULL, NULL,
+                'teste_cat', 'teste_sub', 0.7, 0, ?1, ?1
+            )",
+            params![now],
+        )
+        .expect("failed to insert rule");
+        conn.execute(
+            "INSERT INTO recurring_templates (
+                name, direction, amount_cents, day_of_month, start_date, end_date,
+                category_id, subcategory_id, notes, active
+            ) VALUES (
+                'Conta fixa', 'expense', 1000, 5, '2026-03-01', NULL,
+                'teste_cat', 'teste_sub', '', 1
+            )",
+            [],
+        )
+        .expect("failed to insert recurring template");
+        conn.execute(
+            "INSERT INTO monthly_budgets (
+                month, category_id, subcategory_id, limit_cents, alert_percent, created_at, updated_at
+            ) VALUES (
+                '2026-03', 'teste_cat', 'teste_sub', 5000, 80, ?1, ?1
+            )",
+            params![now],
+        )
+        .expect("failed to insert budget");
+        insert_seed_transaction(
+            &conn,
+            "catalog_usage",
+            "manual",
+            "2026-03-10T09:00:00",
+            -1500,
+            "expense",
+            Some("teste_cat"),
+            "Compra teste",
+        );
+        conn.execute(
+            "UPDATE transactions
+             SET subcategory_id = 'teste_sub'
+             WHERE dedup_fingerprint = 'seed|catalog_usage'",
+            [],
+        )
+        .expect("failed to attach subcategory to transaction");
+
+        let usage = category_catalog_usage(&conn).expect("failed to build usage summary");
+        let category_usage = usage
+            .categories
+            .get("teste_cat")
+            .expect("category usage missing");
+        assert_eq!(category_usage.subcategory_count, 1);
+        assert_eq!(category_usage.transaction_count, 1);
+        assert_eq!(category_usage.rule_count, 1);
+        assert_eq!(category_usage.recurring_count, 1);
+        assert_eq!(category_usage.budget_count, 1);
+
+        let err = delete_category(&conn, "teste_cat").expect_err("delete should be blocked");
+        assert!(
+            err.to_string().contains("subcategoria")
+                && err.to_string().contains("transação")
+                && err.to_string().contains("regra"),
+            "unexpected blocker message: {err}"
+        );
+    }
+
+    #[test]
+    fn delete_subcategory_removes_free_catalog_entry() {
+        let conn = Connection::open_in_memory().expect("failed to open sqlite");
+        init_database(&conn).expect("failed to init database");
+
+        conn.execute(
+            "INSERT INTO categories (id, name, color) VALUES ('livre_cat', 'Livre', '#123456')",
+            [],
+        )
+        .expect("failed to insert category");
+        conn.execute(
+            "INSERT INTO subcategories (id, category_id, name) VALUES ('livre_sub', 'livre_cat', 'Livre')",
+            [],
+        )
+        .expect("failed to insert subcategory");
+
+        let deleted = delete_subcategory(&conn, "livre_sub").expect("delete should succeed");
+        assert_eq!(deleted, 1);
+
+        let remaining: i64 = conn
+            .query_row(
+                "SELECT COUNT(1) FROM subcategories WHERE id = 'livre_sub'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("failed to count subcategory");
+        assert_eq!(remaining, 0);
+    }
+
+    #[test]
     fn init_database_is_idempotent_with_migration_tracking() {
         let conn = Connection::open_in_memory().expect("failed to open sqlite");
 
@@ -3201,6 +4319,10 @@ mod tests {
                 row.get(0)
             })
             .expect("failed to count migrations");
-        assert_eq!(migration_count, 6, "migrations should not duplicate");
+        assert_eq!(
+            migration_count,
+            MIGRATIONS.len() as i64,
+            "migrations should not duplicate"
+        );
     }
 }

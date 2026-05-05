@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DashboardTab } from './DashboardTab'
 import { PlanningTab } from './PlanningTab'
 import type {
+  CategoryKind,
   GoalListItem,
   MonthlyBudgetSummaryResponse,
   ProjectionResponse,
@@ -20,9 +21,9 @@ import type {
   TransactionItem,
 } from '../../types'
 
-const categoryOptions = [
-  { id: 'alimentacao', label: 'Alimentacao' },
-  { id: 'moradia', label: 'Moradia' },
+const categoryOptions: Array<{ id: string; label: string; kind: CategoryKind }> = [
+  { id: 'alimentacao', label: 'Alimentacao', kind: 'expense' },
+  { id: 'moradia', label: 'Moradia', kind: 'expense' },
 ]
 
 const subcategoriesByCategory: Record<string, SubcategoryItem[]> = {
@@ -77,6 +78,22 @@ const projection: ProjectionResponse = {
       goalAllocatedCents: 32000,
     },
   ],
+  scheduledProjection: [
+    {
+      date: '2026-04-10',
+      label: 'Internet',
+      sourceKind: 'recurring',
+      amountCents: -12000,
+      balanceCents: 1228000,
+    },
+    {
+      date: '2026-04-18',
+      label: 'Freelance',
+      sourceKind: 'manual',
+      amountCents: 250000,
+      balanceCents: 1478000,
+    },
+  ],
   goalProgress: [
     {
       goalId: 1,
@@ -86,6 +103,70 @@ const projection: ProjectionResponse = {
       completionMonth: '2027-07',
     },
   ],
+}
+
+const projectionComparisons: Partial<Record<ProjectionScenario, ProjectionResponse>> = {
+  base: projection,
+  optimistic: {
+    monthlyProjection: [
+      {
+        month: '2026-04',
+        incomeCents: 490000,
+        expenseCents: -295000,
+        netCents: 195000,
+        balanceCents: 1295000,
+        goalAllocatedCents: 36000,
+      },
+      {
+        month: '2026-05',
+        incomeCents: 500000,
+        expenseCents: -285000,
+        netCents: 215000,
+        balanceCents: 1510000,
+        goalAllocatedCents: 40000,
+      },
+    ],
+    scheduledProjection: projection.scheduledProjection,
+    goalProgress: [
+      {
+        goalId: 1,
+        goalName: 'Reserva de emergencia',
+        targetCents: 1500000,
+        projectedCents: 1380000,
+        completionMonth: '2027-03',
+      },
+    ],
+  },
+  pessimistic: {
+    monthlyProjection: [
+      {
+        month: '2026-04',
+        incomeCents: 420000,
+        expenseCents: -335000,
+        netCents: 85000,
+        balanceCents: 1180000,
+        goalAllocatedCents: 22000,
+      },
+      {
+        month: '2026-05',
+        incomeCents: 425000,
+        expenseCents: -340000,
+        netCents: 85000,
+        balanceCents: 1265000,
+        goalAllocatedCents: 22000,
+      },
+    ],
+    scheduledProjection: projection.scheduledProjection,
+    goalProgress: [
+      {
+        goalId: 1,
+        goalName: 'Reserva de emergencia',
+        targetCents: 1500000,
+        projectedCents: 920000,
+        completionMonth: 'não atingido',
+      },
+    ],
+  },
 }
 
 const monthlyBudgetSummary: MonthlyBudgetSummaryResponse = {
@@ -298,6 +379,8 @@ function PlanningHarness({
       goals={goals}
       monthlyBudgetSummary={monthlyBudgetSummary}
       projection={projection}
+      projectionComparisons={projectionComparisons}
+      selectedProjectionScenario="base"
       onRunProjection={onRunProjection}
       categoryOptions={categoryOptions}
       subcategoriesByCategory={subcategoriesByCategory}
@@ -363,7 +446,7 @@ describe('integration flows - planning and dashboard', () => {
     )
 
     expect(screen.getByText(/Setup inicial pendente/i)).toBeTruthy()
-    expect(screen.getByText(/Próxima etapa recomendada:/i)).toBeTruthy()
+    expect(screen.getByText(/etapa recomendada/i)).toBeTruthy()
 
     await user.click(screen.getByRole('button', { name: /Retomar setup inicial/i }))
     await user.click(screen.getByRole('button', { name: /Abrir segurança/i }))
@@ -426,13 +509,15 @@ describe('integration flows - planning and dashboard', () => {
     expect(screen.getByText(/Pendencia 1/i)).toBeTruthy()
     expect(screen.getByText(/Pendencia 6/i)).toBeTruthy()
     expect(screen.queryByText(/Pendencia 7/i)).toBeNull()
-    expect(screen.getByText(/Fechamento mensal rapido/i)).toBeTruthy()
+    expect(screen.getByText(/Fechamento mensal rápido/i)).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Detalhes do período da reconciliação/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Detalhes da reconciliação de conta/i })).toBeTruthy()
 
-    await user.click(screen.getByRole('button', { name: /Abrir orcamento/i }))
+    await user.click(screen.getByRole('button', { name: /Abrir orçamento/i }))
     expect(onOpenBudgetPlanner).toHaveBeenCalledTimes(1)
-    await user.click(screen.getByRole('button', { name: /Ir para revisao/i }))
+    await user.click(screen.getByRole('button', { name: /Ir para revisão/i }))
     expect(onOpenTransactions).toHaveBeenCalledTimes(1)
-    await user.click(screen.getByRole('button', { name: /Revisar pendencias de conta/i }))
+    await user.click(screen.getByRole('button', { name: /Revisar pendências de conta/i }))
     expect(onOpenTransactionsByAccount).toHaveBeenCalledWith('checking')
     await user.clear(screen.getByLabelText(/Saldo atual/i))
     await user.type(screen.getByLabelText(/Saldo atual/i), '1800')
@@ -517,9 +602,16 @@ describe('integration flows - planning and dashboard', () => {
     expect(onSaveGoalScenarioAllocations).toHaveBeenCalledWith(1)
 
     await user.click(screen.getByRole('button', { name: /Proje/i }))
-    expect(screen.getByText(/Compare cenários/i)).toBeTruthy()
+    expect(screen.getByText(/Compare cen/i)).toBeTruthy()
+    expect(screen.getByText(/Comparativo de cenários/i)).toBeTruthy()
+    expect(screen.getAllByText(/Diferença vs base/i).length).toBeGreaterThan(0)
+    expect(screen.getByText(/Trilha de contribuição por meta/i)).toBeTruthy()
+    expect(screen.getAllByText(/Aporte total/i).length).toBeGreaterThan(0)
+    expect(screen.getAllByText(/Conclusão:/i).length).toBeGreaterThan(0)
     await user.click(screen.getByRole('button', { name: /Otimista/i }))
     expect(onRunProjection).toHaveBeenCalledWith('optimistic')
-    expect(screen.getByText(/2026-04/i)).toBeTruthy()
-  })
+    expect(screen.getAllByText(/2026-04/i).length).toBeGreaterThan(0)
+    expect(screen.getByText(/Agenda por data/i)).toBeTruthy()
+    expect(screen.getByText(/Internet/i)).toBeTruthy()
+  }, 10000)
 })

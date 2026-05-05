@@ -1,6 +1,8 @@
 import { useRef } from 'react'
 import type { ReactNode } from 'react'
 
+import { HintBadge } from '../common/HintBadge'
+
 type BasisMode = 'purchase' | 'cashflow'
 type UiMode = 'simple' | 'advanced'
 type InitShellSegmentId = 'layout_base' | 'sidebar' | 'topbar'
@@ -101,10 +103,14 @@ export function AppShell({
               key={tab.id}
               type="button"
               className={activeTab === tab.id ? 'gf-nav-item active' : 'gf-nav-item'}
+              aria-label={`${tab.label}. ${tab.description}`}
+              aria-current={activeTab === tab.id ? 'page' : undefined}
+              data-description={tab.description}
+              title={tab.description}
               onClick={() => onTabChange(tab.id)}
             >
-              <span>{tab.label}</span>
-              <small>{tab.description}</small>
+              <span className="gf-nav-item-label">{tab.label}</span>
+              {activeTab === tab.id ? <small>{tab.description}</small> : null}
             </button>
           ))}
         </nav>
@@ -121,8 +127,16 @@ export function AppShell({
           }}
         >
           <div className="gf-topbar-meta">
-            <h2>{activeTabMeta?.label ?? 'GarlicFinance'}</h2>
-            <p>{activeTabMeta?.description ?? ''}</p>
+            <div className="gf-topbar-title-row">
+              <h2>{activeTabMeta?.label ?? 'GarlicFinance'}</h2>
+              {activeTabMeta?.description && (
+                <HintBadge
+                  label={`Descrição da aba ${activeTabMeta.label}`}
+                  hint={activeTabMeta.description}
+                />
+              )}
+            </div>
+            <small className="gf-topbar-caption">Base, período e busca rápida do workspace.</small>
             {backgroundActivities && backgroundActivities.length > 0 && (
               <div className="gf-topbar-activity" role="status" aria-live="polite">
                 {backgroundActivities.map((activity) => (

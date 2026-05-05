@@ -38,4 +38,11 @@ def test_parse_all_creates_expected_fingerprints_and_types() -> None:
         "btg_checking_xls",
         "btg_card_encrypted_xlsx",
     }
-    assert sample["flowType"] in {"income", "expense", "transfer", "credit_card_payment", "balance_snapshot"}
+    assert sample["flowType"] in {
+        "income",
+        "expense",
+        "expense_adjustment",
+        "transfer",
+        "credit_card_payment",
+        "balance_snapshot",
+    }

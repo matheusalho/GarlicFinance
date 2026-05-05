@@ -6,8 +6,8 @@ Controlar rollout, fallback e rastreabilidade da V2 por módulo, sem perpetuar a
 ## Regras Ativas
 - Namespace recomendado: `v2_*`.
 - Persistência alvo: `app_settings.feature_flags_v2`.
-- Flags V1 seguem apenas como camada transitória de compatibilidade.
-- Antes do gate final da `v2.0.0`, os fallbacks `legacy` e flags V1 de transição devem ser removidos ou excluídos da release final.
+- Desde a Sprint `8.1`, o runtime principal não depende mais de flags V1 de transição.
+- Antes do gate final da `v2.0.0`, validar em ambiente limpo que não há superfície funcional legada ativa.
 
 ## Flags V2
 | Flag | Módulo | Sprint alvo | Default dev | Default release | Finalidade |
@@ -22,19 +22,18 @@ Controlar rollout, fallback e rastreabilidade da V2 por módulo, sem perpetuar a
 | `v2_release_rc_guard_enabled` | Release/QA | 8 | `on` | `on` | impor guardas finais de release |
 
 ## Relação com Flags V1
-Flags V1 ainda existentes:
-- `newLayoutEnabled`
-- `newDashboardEnabled`
-- `newTransactionsEnabled`
-- `newPlanningEnabled`
-- `newSettingsEnabled`
-- `onboardingEnabled`
+Status após Sprint `8.1`:
+- `newLayoutEnabled`, `newDashboardEnabled`, `newTransactionsEnabled`, `newPlanningEnabled`, `newSettingsEnabled` e `onboardingEnabled` foram aposentadas do runtime e da UI operacional.
+- O contrato ativo de flags na V2 foi reduzido para `idleTabPrefetchEnabled` e `v2AsyncJobsEnabled`.
+- Leitura de payload antigo fica normalizada de forma unidirecional (chaves desconhecidas são ignoradas).
 
-Diretriz:
-- não criar novas dependências de produto nessas flags;
-- usá-las apenas enquanto a transição exigir compatibilidade temporária;
-- mantê-las recolhidas em diagnóstico quando houver exposição de UI;
-- removê-las antes do fechamento final da `v2.0.0`.
+## Checklist Técnico Pré-RC para Flags de Transição
+1. Concluído: remover do runtime principal os gates `newLayoutEnabled`, `newDashboardEnabled`, `newTransactionsEnabled` e `newSettingsEnabled`.
+2. Concluído: remover a trilha transitória de `onboardingEnabled` como fallback de superfície, mantendo apenas o comportamento V2 validado.
+3. Concluído: aposentar `newPlanningEnabled` no runtime e restringir compatibilidade à normalização de payload legado.
+4. Concluído: eliminar a exposição das flags V1 da UI de diagnóstico.
+5. Concluído: build validado sem chunks `Legacy*.js`.
+6. Concluído (Sprint 8.2): instalador RC e cenário de upgrade foram cobertos por gate técnico completo + validação de compatibilidade de payload legado de flags.
 
 ## Check Operacional por Sprint
 1. Validar a flag do sprint em `dev` e `release`.

@@ -1,9 +1,12 @@
 export type FlowType =
   | 'income'
   | 'expense'
+  | 'expense_adjustment'
   | 'transfer'
   | 'credit_card_payment'
   | 'balance_snapshot'
+
+export type CategoryKind = 'income' | 'expense' | 'neutral'
 
 export interface ImportCandidate {
   sourceType: string
@@ -17,7 +20,15 @@ export interface ImportScanResponse {
   candidates: ImportCandidate[]
 }
 
-export type ImportRunStatus = 'running' | 'success' | 'partial' | 'error' | 'noop'
+export interface ImportPreflightResponse {
+  effectiveScope: ImportRunScope
+  candidateCount: number
+  scopedCandidateCount: number
+  requiresBtgPassword: boolean
+  warnings: string[]
+}
+
+export type ImportRunStatus = 'running' | 'success' | 'partial' | 'error' | 'noop' | 'cancelled'
 
 export interface ImportRunScope {
   mode: string
@@ -152,7 +163,7 @@ export interface RuleDryRunItem {
   transactionId: number
   occurredAt: string
   sourceType: string
-  flowType: 'income' | 'expense'
+  flowType: FlowType
   amountCents: number
   descriptionRaw: string
   ruleId: number
@@ -168,6 +179,23 @@ export interface RulesDryRunResponse {
   sample: RuleDryRunItem[]
 }
 
+export interface TransactionSuggestionItem {
+  transactionId: number
+  ruleId: number
+  score: number
+  confidence: number
+  usageCount: number
+  categoryId: string
+  categoryName: string
+  subcategoryId: string
+  subcategoryName: string
+  explanation: string[]
+}
+
+export interface TransactionSuggestionsResponse {
+  items: TransactionSuggestionItem[]
+}
+
 export interface SubcategoryItem {
   id: string
   categoryId: string
@@ -178,7 +206,21 @@ export interface CategoryTreeItem {
   id: string
   name: string
   color: string
+  kind: CategoryKind
   subcategories: SubcategoryItem[]
+}
+
+export interface CategoryCatalogUsageItem {
+  transactionCount: number
+  ruleCount: number
+  recurringCount: number
+  budgetCount: number
+  subcategoryCount: number
+}
+
+export interface CategoryCatalogUsageResponse {
+  categories: Record<string, CategoryCatalogUsageItem>
+  subcategories: Record<string, CategoryCatalogUsageItem>
 }
 
 export interface DashboardKpis {
@@ -235,6 +277,14 @@ export interface ProjectionMonth {
   goalAllocatedCents: number
 }
 
+export interface ProjectionScheduledItem {
+  date: string
+  label: string
+  sourceKind: string
+  amountCents: number
+  balanceCents: number
+}
+
 export interface GoalProjectionProgress {
   goalId: number
   goalName: string
@@ -245,6 +295,7 @@ export interface GoalProjectionProgress {
 
 export interface ProjectionResponse {
   monthlyProjection: ProjectionMonth[]
+  scheduledProjection?: ProjectionScheduledItem[]
   goalProgress: GoalProjectionProgress[]
 }
 
@@ -335,7 +386,7 @@ export interface UiPreferencesV1 {
   chartsEnabled: boolean
 }
 
-export type OnboardingStep = 'import' | 'categorize' | 'dashboard' | 'projection'
+export type OnboardingStep = 'import' | 'categories_setup' | 'dashboard' | 'projection'
 
 export interface OnboardingStateV1 {
   completed: boolean
@@ -343,12 +394,6 @@ export interface OnboardingStateV1 {
 }
 
 export interface FeatureFlagsV1 {
-  newLayoutEnabled: boolean
-  newDashboardEnabled: boolean
-  newTransactionsEnabled: boolean
-  newPlanningEnabled: boolean
-  newSettingsEnabled: boolean
-  onboardingEnabled: boolean
   idleTabPrefetchEnabled: boolean
   v2AsyncJobsEnabled: boolean
 }

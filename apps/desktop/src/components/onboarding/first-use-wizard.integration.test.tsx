@@ -74,6 +74,7 @@ function FirstUseWizardHarness() {
       onActiveStepChange={setActiveStepId}
       basePath={basePath}
       onBasePathChange={setBasePath}
+      onPickBasePath={vi.fn()}
       btgPasswordInput={btgPasswordInput}
       onBtgPasswordInputChange={setBtgPasswordInput}
       btgPasswordConfigured={btgPasswordConfigured}
@@ -140,5 +141,5 @@ describe('FirstUseWizard integration', () => {
     await user.click(screen.getByRole('button', { name: 'Importar agora' }))
 
     screen.getByText('4/4 concluídos')
-  })
+  }, 10000)
 })

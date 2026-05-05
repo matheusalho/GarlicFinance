@@ -12,7 +12,7 @@ Para economizar contexto:
 
 ## Estado Atual
 - Versão base publicada: `v1.0.0`.
-- Ciclo ativo: `V2.0`.
+- Ciclo ativo: `V2.1.x (hardening de release)`.
 - Arquitetura: `Tauri + React + TypeScript + SQLite + sidecar importer Python empacotado`.
 - Direção visual: `Editorial Finance`.
 - Navegação: `Sidebar + Workspace`.
@@ -24,7 +24,7 @@ Para economizar contexto:
 2. Melhorar performance percebida e responsividade em bases reais.
 3. Tornar a importação resiliente, observável e recuperável.
 4. Preservar a lógica financeira de domínio e evitar distorções contábeis.
-5. Fechar a `v2.0.0` sem dependência funcional visível de `legacy`.
+5. Publicar a `v2.1.1` sem dependência funcional visível de `legacy`.
 
 ## Guardrails Técnicos
 - Não alterar lógica financeira de domínio sem teste de regressão dedicado.
@@ -43,7 +43,7 @@ Para economizar contexto:
 - Roadmap fechado: `docs/ROADMAP_FECHADO_V2_0_SPRINTS.md`
 - Matriz de flags V2: `docs/MATRIZ_FEATURE_FLAGS_V2.md`
 - Histórico detalhado V2: `docs/HISTORICO_SESSOES_V2.md`
-- Evidência mais recente: `docs/EVIDENCIAS_SPRINT4_PERFORMANCE_E_RESPONSIVIDADE_V2_0_2026-03-09.md`
+- Evidência mais recente: `docs/EVIDENCIAS_V2_1_1_PREMIUM_POLISH_PUBLISH_GATE_2026-03-17.md`
 
 ## Status do Roadmap V2
 | Sprint | Status | Resultado atual | Próximo checkpoint |
@@ -52,17 +52,17 @@ Para economizar contexto:
 | 2 — Onboarding e Primeiro Uso | done | wizard operacional, empty states guiados e retomada contextual concluídos | preservar fluxo ao evoluir Import Center |
 | 3 — Import Center 2.0 | done | Sprint 3 fechada com histórico, status por arquivo, reprocessamento seletivo e relatório acionável | manter a trilha V2 sem reabrir dependência funcional de `legacy` |
 | 4 — Performance e Responsividade | done | importação assíncrona com progresso visível, refresh parcial explicitado, Central de Importação paginada e flags transitórias recolhidas para diagnóstico | manter benchmark comparável nas próximas otimizações |
-| 5 — Transações e Categorização Pro | todo | escopo fechado no roadmap | Sprint 5.1: estruturar inbox de revisão por impacto |
-| 6 — Planejamento e Projeções 2.0 | todo | escopo fechado no roadmap | depende da Sprint 5 |
-| 7 — Polimento UX/UI e Acessibilidade | todo | escopo fechado no roadmap | inclui preparação para remoção final do `legacy` |
-| 8 — Release Candidate e GA 2.0 | todo | escopo fechado no roadmap | remove fallbacks `legacy` e flags V1 de transição |
+| 5 — Transações e Categorização Pro | done | Sprint 5 fechada com inbox por impacto, lote, sugestões explicáveis, catálogo robusto e regra criada direto da revisão | migrar foco para Planejamento e Projeções 2.0 |
+| 6 — Planejamento e Projeções 2.0 | done | `6.1-6.4` concluídas com agenda futura por data, comparativo explícito, trilha por meta e isolamento da trilha V2 de Planejamento | migrar foco para polimento UX/UI e acessibilidade |
+| 7 — Polimento UX/UI e Acessibilidade | done | `7.1-7.3` concluídas com shell V2 enxuto, hints acessíveis, responsividade final validada em `1280px` e checklist técnico de remoção do `legacy` formalizado | iniciar Sprint 8.1 |
+| 8 — Release Candidate e GA 2.0+ | done | `8.1-8.3` concluídas + EPIC RC-Final “Premium Polish & Publish Gate” aplicado em `v2.1.1` com hardening de encoding, preflight de importação por escopo, categorização flow-aware, a11y modal e limpeza de release | executar validação humana final (instalação limpa + upgrade) e consolidar Go/No-Go de publicação |
 
 ## Definition of Done Global (V2)
 - `npm --workspace apps/desktop run typecheck`
 - `npm --workspace apps/desktop run lint`
 - `npm --workspace apps/desktop run test`
 - `npm --workspace apps/desktop run build`
-- `npm --workspace apps/desktop run smoke:e2e:v16`
+- `npm --workspace apps/desktop run smoke:e2e:v2` (alias compatível com `smoke:e2e:v16`)
 - `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml`
 - `pytest services/importer/tests -q`
 - Evidência de sprint atualizada em `docs/`
@@ -79,15 +79,39 @@ Para economizar contexto:
 | 07/03/2026 | Separar o histórico V2 em arquivo próprio e manter os documentos centrais compactos | Reduzir consumo de contexto sem perder recuperabilidade | `AGENTS.md` e `CONTEXTO...` passam a ser lidos primeiro; histórico detalhado só quando necessário |
 | 07/03/2026 | Materializar o escopo seletivo de importação em paths efetivos antes do parse | Garantir reprocessamento previsível por fonte/arquivo sem alterar o importer de domínio | Sprint 3.2 fecha a Central de Importação 2.0 com ações realmente executáveis |
 | 09/03/2026 | Fechar Sprint 4 com importação assíncrona e visibilidade de atividades em segundo plano | Melhorar responsividade real sem reabrir dependência funcional de `legacy` | Sprint 5 passa a atacar produtividade de revisão e categorização |
+| 09/03/2026 | Priorizar a fila de revisão por impacto financeiro, recência e receitas pendentes | Tornar a categorização mais operacional e menos linear | Sprint 5.1 redefine a entrada padrão da revisão na V2 |
+| 09/03/2026 | Fechar Sprint 5.2 com lote e atalhos diretamente na aba de Transações V2 | Reduzir esforço manual por item e aproximar a revisão de um fluxo operacional real | Sprint 5 avança para sugestões explicáveis de categorização |
+| 10/03/2026 | Fechar Sprint 5.3 com sugestões explicáveis apoiadas no mesmo motor de regras | Reduzir decisão manual sem criar uma trilha paralela de classificação | A revisão da V2 passa a mostrar sugestão pronta e aplicável |
+| 10/03/2026 | Fechar Sprint 5.4 com validação forte e exclusão segura no catálogo | Tornar categorias/subcategorias operacionais e confiáveis para uso contínuo | O catálogo V2 passa a expor vínculos, duplicidades e bloqueios reais |
+| 10/03/2026 | Fechar Sprint 5.5 com criação de regra direto da revisão | Reaproveitar a decisão manual no ponto exato em que ela acontece | Sprint 5 deixa de depender da aba de Regras para capturar aprendizado operacional |
+| 10/03/2026 | Trocar o smoke E2E local de `vite dev` para `vite preview` | Eliminar falso negativo reprodutível do runner em Windows e validar em runtime mais próximo da release | O gate de smoke volta a ser confiável e aderente ao build publicado |
+| 10/03/2026 | Fechar Sprint 6.2 com comparativo explícito entre cenários no Planejamento | Tornar a leitura de `Base`, `Otimista` e `Pessimista` comparável sem navegação implícita ou rodada mental do usuário | O painel de projeções da V2 passa a expor saldo final, líquido acumulado, reserva para metas e diferença versus base |
+| 10/03/2026 | Fechar Sprint 6.3 com trilha de contribuição por meta e leitura de conclusão por cenário | Tornar a contribuição futura legível na ótica de cada meta, sem exigir interpretação manual do comparativo agregado | O Planejamento V2 passa a expor aportes projetados, conclusão estimada e total contribuído por meta em cada cenário |
+| 10/03/2026 | Fechar Sprint 6.4 isolando o Planejamento V2 do fallback legacy | Eliminar dependência funcional remanescente no módulo de Planejamento antes da fase de polimento final | O Planejamento passa a ser V2 sempre, o toggle antigo sai da UI e o build deixa de gerar chunk de `LegacyPlanningTab` |
+| 10/03/2026 | Fechar Sprint 7.1 com redução explícita de ruído no shell V2 | Tornar a navegação e o topo menos densos sem perder contexto operacional | Abas inativas ficaram sem subtítulo persistente e metadados densos passaram a aparecer sob demanda |
+| 10/03/2026 | Fechar Sprint 7.2 com hints acessíveis e consistentes nas superfícies V2 prioritárias | Consolidar AA, reduzir interação aninhada e eliminar ruído visual restante nas áreas mais usadas | Dashboard, Transações e Configurações passaram a usar hints acionáveis por teclado, com smoke visual validado |
+| 10/03/2026 | Fechar Sprint 7.3 com breakpoint intermediário e checklist pré-RC do `legacy` | Corrigir a densidade excessiva em `1280px` e transformar a remoção do `legacy` em trabalho operacional explícito | Shell, dashboard e cards críticos ficaram mais compactos no smoke `compact-1280`; o checklist passou a apontar diretamente para `App.tsx`, flags V1 transitórias e chunks `Legacy*.js` restantes |
+| 11/03/2026 | Fechar Sprint 8.1 removendo runtime `legacy` e flags V1 de transição | Consolidar a release em trilha V2-only antes do RC final | `App.tsx` deixou de ter branches V1/V2 para Dashboard/Transações/Configurações; contrato de `FeatureFlagsV1` foi reduzido para flags V2 ativas; build não emitiu chunks `Legacy*.js` |
+| 11/03/2026 | Fechar Sprint 8.2 com gate RC V2-only de instalador/ambiente limpo | Transformar o pré-GA em evidência objetiva de release, incluindo empacotamento e compatibilidade de upgrade | `tauri:build` + `release:check:v2` validados; MSI/sidecar com hash publicados; checklist RC V2 formalizado; compatibilidade de `feature_flags` legadas coberta por testes e normalização |
+| 11/03/2026 | Avançar Sprint 8.3 com polimento final e alinhamento de release `2.0.0` | Fechar acabamento técnico pré-GA e reduzir risco de publicação com versão inconsistente | Navegação lateral ficou em ordem operacional, textos críticos foram polidos, manifests migraram para `2.0.0` e o `release:check:v2` passou a validar consistência de versão e nome do MSI |
+| 12/03/2026 | Fechar hotfix V2.0.x de natureza de categorias + onboarding modal + revisão atômica | Corrigir distorção contábil de créditos BTG, completar onboarding inicial e eliminar remoção prematura da fila de revisão | Migration `007` aplicada, `expense_adjustment` consolidado, `transactions_apply_decision` integrado, onboarding popup retomável com etapa `categories_setup` e gates técnicos completos verdes |
+| 17/03/2026 | Fechar EPIC RC-Final para `v2.1.1` | Consolidar acabamento premium antes de publicação (encoding, escopo de importação, prevenção de erro de categorização, a11y modal e limpeza de release) | Gate técnico completo + `tauri:build` + `release:check:v2` verdes; MSI `GarlicFinance_2.1.1_x64_en-US.msi` e sidecar validados |
+
+## Checklist Técnico Pré-RC de Remoção do Legacy
+1. Concluído: remover de [App.tsx](C:\Projetos\GarlicFinance\apps\desktop\src\App.tsx) os imports, `lazy()` e branches de runtime ligados a `LegacyDashboardTab`, `LegacyTransactionsTab` e `LegacySettingsTab`.
+2. Concluído: aposentar os gates V1 `newLayoutEnabled`, `newDashboardEnabled`, `newTransactionsEnabled`, `newSettingsEnabled` e a trilha transitória ligada a `onboardingEnabled`, migrando o runtime para V2-only.
+3. Concluído: limpar a exposição de flags V1 na UI de Configurações e reduzir a persistência para compatibilidade mínima via normalização.
+4. Concluído: o build da V2 não gerou chunks `Legacy*.js` na validação da Sprint 8.1.
+5. Concluído: instalador RC revalidado com `tauri:build` + checagem de artefatos (`release:check:v2`) em fluxo V2-only.
 
 ## Sessão Atual
-- Data: `09/03/2026`
-- Sprint ativa: `Sprint 5 — Transações e Categorização Pro`
-- Entrega concluída nesta data: `Sprint 4`
-- Resultado: importação pesada movida para job assíncrono com polling e progresso visível; refresh parcial ganhou feedback explícito no shell; Central de Importação 2.0 passou a ter paginação configurável; flags transitórias de compatibilidade ficaram recolhidas em diagnóstico.
-- Melhoria operacional desta sessão: benchmark V2 `dev` vs `preview` atualizado após as mudanças de responsividade e smoke visual validado.
-- Risco aberto principal: a próxima fronteira de valor está na produtividade da fila de revisão e na explicabilidade das sugestões de categorização.
-- Próximo passo único: `Sprint 5.1: estruturar a inbox de revisão por impacto e ordenação operacional de pendências.`
+- Data: `05/05/2026`
+- Sprint ativa: `Task 0 — Release Proof And Baseline Integrity`
+- Entrega concluida nesta data: `Build do instalador 2.1.1 e limpeza local para instalacao limpa`
+- Resultado: `npm --workspace apps/desktop run tauri:build` regenerou o MSI `apps/desktop/src-tauri/target/release/bundle/msi/GarlicFinance_2.1.1_x64_en-US.msi`; `release:check:v2` passou com relatorio em `output/release/v2-rc-check/2026-05-05T13-25-43-076Z/report.json`; `%APPDATA%\GarlicFinance`, `%LOCALAPPDATA%\com.garlicfinance.desktop`, `%LOCALAPPDATA%\GarlicFinance` e a credencial Windows `GarlicFinance:btg` foram removidos para primeira instalacao sem dados anteriores.
+- Melhoria operacional desta sessão: evidencias separadas em `docs/EVIDENCIAS_BUILD_INSTALADOR_E_LIMPEZA_LOCAL_V2_1_1_2026-05-05.md`, mantendo claro que build/limpeza local passaram, mas instalacao e primeira abertura ainda nao foram executadas.
+- Risco aberto principal: validacao humana de primeira abertura ainda pendente; apos instalar o MSI, confirmar que o app inicia sem transacoes importadas e apresenta o fluxo inicial/onboarding.
+- Próximo passo único: `Instalar o MSI GarlicFinance_2.1.1_x64_en-US.msi recem-gerado, abrir o app e validar que a experiencia inicia limpa, sem dados historicos importados.`
 
 ## Rotina de Atualização
 No início da sessão:

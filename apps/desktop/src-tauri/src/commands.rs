@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use chrono::{Datelike, NaiveDate, Utc};
 use regex::Regex;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -13,26 +13,29 @@ use tauri::State;
 
 use crate::db;
 use crate::models::{
-    BudgetUpsertInput, BudgetUpsertResponse, CategoryBreakdown, CategoryTreeItem,
-    CategoryUpsertInput, CategoryUpsertResponse, DashboardInput, DashboardKpis,
-    DashboardSeriesPoint, DashboardSummaryResponse, GoalAllocationInput, GoalAllocationItem,
-    GoalAllocationUpsertResponse, GoalInput, GoalListItem, GoalProjectionProgress,
-    GoalUpsertResponse, ImportHistoryResponse, ImportJobStatusResponse, ImportRunFileItem,
-    ImportRunResponse, ImportRunScope, ImportScanResponse, ImportSourceSummaryItem,
-    ImporterParseOutput, ImporterScanOutput, ManualBalanceSnapshotInput,
-    ManualBalanceSnapshotResponse, ManualTransactionInput, ManualTransactionResponse,
-    MonthlyBudgetSummaryResponse, ObservabilityEventItem, ObservabilityLogEventInput,
-    ParsedSourceFile, ProjectionInput, ProjectionMonth, ProjectionResponse,
-    ReconciliationAccountItem, ReconciliationInput, ReconciliationSummaryResponse,
-    RecurringTemplateInput, RecurringTemplateItem, RecurringTemplateResponse, RuleDryRunItem,
-    RuleListItem, RuleUpsertInput, RuleUpsertResponse, RulesDryRunResponse,
-    SettingsAutoImportResponse, SettingsAutoImportSetInput, SettingsFeatureFlagsResponse,
-    SettingsFeatureFlagsSetInput, SettingsOnboardingResponse, SettingsOnboardingSetInput,
-    SettingsPasswordSetInput, SettingsPasswordStatusResponse, SettingsPasswordTestInput,
-    SettingsPasswordTestResponse, SettingsSimpleResponse, SettingsUiPreferencesResponse,
-    SettingsUiPreferencesSetInput, SubcategoryUpsertInput, SubcategoryUpsertResponse,
-    TransactionsFilters, TransactionsListResponse, TransactionsReviewQueueResponse,
-    UpdateCategoryInput, UpdatedCountResponse,
+    BudgetUpsertInput, BudgetUpsertResponse, CategoryBreakdown, CategoryCatalogUsageResponse,
+    CategoryDeleteInput, CategoryTreeItem, CategoryUpsertInput, CategoryUpsertResponse,
+    DashboardInput, DashboardKpis, DashboardSeriesPoint, DashboardSummaryResponse,
+    GoalAllocationInput, GoalAllocationItem, GoalAllocationUpsertResponse, GoalInput, GoalListItem,
+    GoalProjectionProgress, GoalUpsertResponse, ImportCandidate, ImportHistoryResponse,
+    ImportJobStatusResponse, ImportPreflightResponse, ImportRunFileItem, ImportRunResponse,
+    ImportRunScope, ImportScanResponse, ImportSourceSummaryItem, ImporterParseOutput,
+    ImporterScanOutput, ManualBalanceSnapshotInput, ManualBalanceSnapshotResponse,
+    ManualTransactionInput, ManualTransactionResponse, MonthlyBudgetSummaryResponse,
+    ObservabilityEventItem, ObservabilityLogEventInput, ParsedSourceFile, ProjectionInput,
+    ProjectionMonth, ProjectionResponse, ProjectionScheduledItem, ReconciliationAccountItem,
+    ReconciliationInput, ReconciliationSummaryResponse, RecurringTemplateInput,
+    RecurringTemplateItem, RecurringTemplateResponse, RuleDryRunItem, RuleListItem,
+    RuleUpsertInput, RuleUpsertResponse, RulesDryRunResponse, SettingsAutoImportResponse,
+    SettingsAutoImportSetInput, SettingsFeatureFlagsResponse, SettingsFeatureFlagsSetInput,
+    SettingsOnboardingResponse, SettingsOnboardingSetInput, SettingsPasswordSetInput,
+    SettingsPasswordStatusResponse, SettingsPasswordTestInput, SettingsPasswordTestResponse,
+    SettingsSimpleResponse, SettingsUiPreferencesResponse, SettingsUiPreferencesSetInput,
+    SubcategoryDeleteInput, SubcategoryUpsertInput, SubcategoryUpsertResponse,
+    TransactionDecisionInput, TransactionDecisionResponse, TransactionSuggestionItem,
+    TransactionSuggestionsInput, TransactionSuggestionsResponse, TransactionsFilters,
+    TransactionsListResponse, TransactionsReviewQueueResponse, UpdateCategoryInput,
+    UpdatedCountResponse,
 };
 
 const SUPPORTED_SCENARIOS: [&str; 3] = ["base", "optimistic", "pessimistic"];
@@ -44,6 +47,7 @@ pub struct AppState {
     next_import_job_seq: Arc<AtomicU64>,
     import_jobs: Arc<Mutex<HashMap<String, ImportJobStatusResponse>>>,
     active_import_job_id: Arc<Mutex<Option<String>>>,
+    cancel_requested_import_jobs: Arc<Mutex<HashSet<String>>>,
 }
 
 impl AppState {
@@ -54,6 +58,7 @@ impl AppState {
             next_import_job_seq: Arc::new(AtomicU64::new(1)),
             import_jobs: Arc::new(Mutex::new(HashMap::new())),
             active_import_job_id: Arc::new(Mutex::new(None)),
+            cancel_requested_import_jobs: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -65,6 +70,9 @@ impl AppState {
     fn upsert_import_job(&self, snapshot: ImportJobStatusResponse) {
         if let Ok(mut jobs) = self.import_jobs.lock() {
             jobs.insert(snapshot.job_id.clone(), snapshot.clone());
+        }
+        if !is_import_job_active(&snapshot.status) {
+            self.clear_import_job_cancel_request(&snapshot.job_id);
         }
         if let Ok(mut active_job_id) = self.active_import_job_id.lock() {
             if is_import_job_active(&snapshot.status) {
@@ -95,6 +103,9 @@ impl AppState {
         };
 
         if let Some(snapshot) = snapshot {
+            if !is_import_job_active(&snapshot.status) {
+                self.clear_import_job_cancel_request(&snapshot.job_id);
+            }
             if let Ok(mut active_job_id) = self.active_import_job_id.lock() {
                 if is_import_job_active(&snapshot.status) {
                     *active_job_id = Some(snapshot.job_id.clone());
@@ -124,6 +135,39 @@ impl AppState {
             .and_then(|job_id| self.get_import_job(&job_id))
             .map(|snapshot| is_import_job_active(&snapshot.status))
             .unwrap_or(false)
+    }
+
+    fn request_import_job_cancel(&self, job_id: &str) -> bool {
+        let Some(snapshot) = self.get_import_job(job_id) else {
+            return false;
+        };
+        if !is_import_job_active(&snapshot.status) {
+            return false;
+        }
+        if let Ok(mut cancel_requested) = self.cancel_requested_import_jobs.lock() {
+            cancel_requested.insert(job_id.to_string());
+        }
+        self.update_import_job(job_id, |job| {
+            if is_import_job_active(&job.status) {
+                job.phase = "cancelling".to_string();
+                job.message =
+                    "Cancelamento solicitado. Encerrando o job com segurança...".to_string();
+            }
+        });
+        true
+    }
+
+    fn is_import_job_cancel_requested(&self, job_id: &str) -> bool {
+        self.cancel_requested_import_jobs
+            .lock()
+            .map(|cancel_requested| cancel_requested.contains(job_id))
+            .unwrap_or(false)
+    }
+
+    fn clear_import_job_cancel_request(&self, job_id: &str) {
+        if let Ok(mut cancel_requested) = self.cancel_requested_import_jobs.lock() {
+            cancel_requested.remove(job_id);
+        }
     }
 }
 
@@ -228,6 +272,10 @@ impl ImportJobReporter {
             error_message: Some(final_message),
             result: None,
         });
+    }
+
+    fn cancel_requested(&self) -> bool {
+        self.state.is_import_job_cancel_requested(&self.job_id)
     }
 }
 
@@ -335,6 +383,33 @@ fn normalize_string_list(values: Vec<String>) -> Vec<String> {
         }
     }
     normalized
+}
+
+fn filter_scan_candidates_by_scope(
+    candidates: Vec<ImportCandidate>,
+    include_paths: &[String],
+) -> Vec<ImportCandidate> {
+    if include_paths.is_empty() {
+        return candidates;
+    }
+    let allowed_paths = include_paths.iter().cloned().collect::<HashSet<String>>();
+    candidates
+        .into_iter()
+        .filter(|candidate| allowed_paths.contains(&candidate.path))
+        .collect()
+}
+
+fn to_skipped_hash_source_file(candidate: &ImportCandidate) -> ParsedSourceFile {
+    ParsedSourceFile {
+        source_type: candidate.source_type.clone(),
+        path: candidate.path.clone(),
+        name: candidate.name.clone(),
+        size_bytes: candidate.size_bytes,
+        hash: candidate.hash.clone(),
+        status: "skipped_hash".to_string(),
+        error: "Arquivo ja importado (hash ja existente).".to_string(),
+        transaction_count: 0,
+    }
 }
 
 fn intersect_paths_preserve_left(values: Vec<String>, allowed: &HashSet<String>) -> Vec<String> {
@@ -461,6 +536,46 @@ fn resolve_import_run_scope(
     Ok(requested_scope)
 }
 
+fn build_import_preflight(
+    state: &AppState,
+    conn: &Connection,
+    base_path: &str,
+    reprocess: bool,
+    failed_only: bool,
+    scope: Option<ImportRunScope>,
+) -> Result<ImportPreflightResponse, String> {
+    let effective_scope =
+        resolve_import_run_scope(state, conn, base_path, reprocess, failed_only, scope)?;
+    let scan_output = run_importer_scan(state, base_path).map_err(|err| err.to_string())?;
+    let candidate_count = scan_output.candidates.len() as i64;
+    let scoped_candidates = if import_scope_requires_materialized_paths(&effective_scope.mode) {
+        filter_scan_candidates_by_scope(scan_output.candidates, &effective_scope.include_paths)
+    } else {
+        scan_output.candidates
+    };
+    let scoped_candidate_count = scoped_candidates.len() as i64;
+    let requires_btg_password = scoped_candidates
+        .iter()
+        .any(|candidate| candidate.source_type == "btg_card_encrypted_xlsx");
+    let mut warnings = Vec::new();
+    if import_scope_requires_materialized_paths(&effective_scope.mode)
+        && effective_scope.include_paths.is_empty()
+    {
+        warnings.push(build_empty_import_scope_warning(&effective_scope, failed_only));
+    } else if scoped_candidate_count == 0 {
+        warnings.push(
+            "Nenhum arquivo candidato foi encontrado no escopo efetivo selecionado.".to_string(),
+        );
+    }
+    Ok(ImportPreflightResponse {
+        effective_scope,
+        candidate_count,
+        scoped_candidate_count,
+        requires_btg_password,
+        warnings,
+    })
+}
+
 fn create_import_run_record(
     base_path: &str,
     reprocess: bool,
@@ -479,8 +594,78 @@ fn summarize_completed_import(result: &ImportRunResponse) -> String {
             "Importação concluída: {} arquivo(s), {} novas, {} deduplicadas.",
             result.files_processed, result.inserted, result.deduped
         ),
+        "cancelled" => "Importação cancelada pelo usuário.".to_string(),
         _ => "Importação finalizada.".to_string(),
     }
+}
+
+const IMPORT_CANCELLED_MESSAGE: &str = "Importação cancelada pelo usuário.";
+
+fn complete_cancelled_import_run(
+    conn: &mut Connection,
+    run_id: i64,
+    source_files: &[ParsedSourceFile],
+    warnings: &[String],
+    message: &str,
+) -> Result<ImportRunResponse, String> {
+    let mut combined_warnings = warnings.to_vec();
+    if !combined_warnings.iter().any(|item| item == message) {
+        combined_warnings.push(message.to_string());
+    }
+
+    let files = build_import_run_file_items(run_id, source_files, &HashMap::new());
+    let files_count = source_files.len() as i64;
+    let tx = conn.transaction().map_err(|err| err.to_string())?;
+    for file in &files {
+        db::insert_import_run_file(&tx, file).map_err(|err| err.to_string())?;
+    }
+    db::complete_import_run(
+        &tx,
+        run_id,
+        "cancelled",
+        files_count,
+        files_count,
+        0,
+        0,
+        &combined_warnings,
+        message,
+    )
+    .map_err(|err| err.to_string())?;
+    tx.commit().map_err(|err| err.to_string())?;
+
+    Ok(ImportRunResponse {
+        run_id,
+        status: "cancelled".to_string(),
+        files_processed: source_files.len(),
+        inserted: 0,
+        deduped: 0,
+        warnings: combined_warnings,
+        files,
+    })
+}
+
+fn complete_if_cancel_requested(
+    conn: &mut Connection,
+    run_id: i64,
+    reporter: Option<&ImportJobReporter>,
+    source_files: &[ParsedSourceFile],
+    warnings: &[String],
+) -> Result<Option<ImportRunResponse>, String> {
+    let Some(job) = reporter else {
+        return Ok(None);
+    };
+    if !job.cancel_requested() {
+        return Ok(None);
+    }
+    let response = complete_cancelled_import_run(
+        conn,
+        run_id,
+        source_files,
+        warnings,
+        IMPORT_CANCELLED_MESSAGE,
+    )?;
+    job.finalize(response.clone(), IMPORT_CANCELLED_MESSAGE);
+    Ok(Some(response))
 }
 
 fn run_import_pipeline(
@@ -528,6 +713,11 @@ fn run_import_pipeline(
         }
         message
     })?;
+    if let Some(response) =
+        complete_if_cancel_requested(&mut conn, run_id, reporter, &[], &[])?
+    {
+        return Ok(response);
+    }
 
     if import_scope_requires_materialized_paths(&requested_scope.mode)
         && requested_scope.include_paths.is_empty()
@@ -556,22 +746,128 @@ fn run_import_pipeline(
         return Ok(response);
     }
 
+    let mut parse_scope_paths = requested_scope.include_paths.clone();
+    let mut skipped_source_files: Vec<ParsedSourceFile> = Vec::new();
+    let mut pre_parse_warnings: Vec<String> = Vec::new();
+
+    if !reprocess {
+        reporter.map(|job| {
+            job.running(
+                "scanning_hashes",
+                10.0,
+                0,
+                0,
+                "Verificando arquivos ja importados antes do parse...",
+            )
+        });
+        let scan_output = run_importer_scan(state, &base_path).map_err(|err| {
+            let message = err.to_string();
+            let _ = db::complete_import_run(&conn, run_id, "error", 0, 0, 0, 0, &[], &message);
+            if let Some(job) = reporter {
+                job.fail(message.clone(), Vec::new());
+            }
+            message
+        })?;
+
+        let scoped_candidates =
+            filter_scan_candidates_by_scope(scan_output.candidates, &requested_scope.include_paths);
+        parse_scope_paths.clear();
+        for candidate in scoped_candidates {
+            let already_imported =
+                db::source_file_exists(&conn, &candidate.hash).map_err(|err| err.to_string())?;
+            if already_imported {
+                skipped_source_files.push(to_skipped_hash_source_file(&candidate));
+            } else {
+                parse_scope_paths.push(candidate.path);
+            }
+        }
+        parse_scope_paths = normalize_string_list(parse_scope_paths);
+
+        if !skipped_source_files.is_empty() {
+            pre_parse_warnings.push(format!(
+                "{} arquivo(s) foram ignorados por hash ja importado.",
+                skipped_source_files.len()
+            ));
+        }
+
+        if parse_scope_paths.is_empty() {
+            if pre_parse_warnings.is_empty() {
+                pre_parse_warnings.push(
+                    "Nenhum arquivo novo foi encontrado para importacao no escopo selecionado."
+                        .to_string(),
+                );
+            }
+            let files = build_import_run_file_items(run_id, &skipped_source_files, &HashMap::new());
+            let tx = conn.transaction().map_err(|err| err.to_string())?;
+            for item in &files {
+                db::insert_import_run_file(&tx, item).map_err(|err| err.to_string())?;
+            }
+            save_last_import_path(&tx, &base_path).map_err(|err| err.to_string())?;
+            db::complete_import_run(
+                &tx,
+                run_id,
+                "noop",
+                skipped_source_files.len() as i64,
+                skipped_source_files.len() as i64,
+                0,
+                0,
+                &pre_parse_warnings,
+                "",
+            )
+            .map_err(|err| err.to_string())?;
+            tx.commit().map_err(|err| err.to_string())?;
+
+            let response = ImportRunResponse {
+                run_id,
+                status: "noop".to_string(),
+                files_processed: skipped_source_files.len(),
+                inserted: 0,
+                deduped: 0,
+                warnings: pre_parse_warnings.clone(),
+                files,
+            };
+            if let Some(job) = reporter {
+                job.finalize(response.clone(), summarize_completed_import(&response));
+            }
+            return Ok(response);
+        }
+    }
+    if let Some(response) = complete_if_cancel_requested(
+        &mut conn,
+        run_id,
+        reporter,
+        &skipped_source_files,
+        &pre_parse_warnings,
+    )? {
+        return Ok(response);
+    }
+
     reporter.map(|job| {
         job.running(
             "validating_credentials",
-            10.0,
+            16.0,
             0,
             0,
-            "Validando credenciais necessárias...",
+            "Validando credenciais necessarias...",
         )
     });
 
     let btg_password = read_provider_password("btg")
         .map_err(|err| {
             let message = err.to_string();
-            let _ = db::complete_import_run(&conn, run_id, "error", 0, 0, 0, 0, &[], &message);
+            let _ = db::complete_import_run(
+                &conn,
+                run_id,
+                "error",
+                0,
+                0,
+                0,
+                0,
+                &pre_parse_warnings,
+                &message,
+            );
             if let Some(job) = reporter {
-                job.fail(message.clone(), Vec::new());
+                job.fail(message.clone(), pre_parse_warnings.clone());
             }
             message
         })?
@@ -580,27 +876,43 @@ fn run_import_pipeline(
     reporter.map(|job| {
         job.running(
             "parsing_sources",
-            22.0,
+            24.0,
             0,
             0,
             "Lendo e normalizando arquivos financeiros...",
         )
     });
 
-    let parsed = run_importer_parse(
-        state,
-        &base_path,
-        &btg_password,
-        &requested_scope.include_paths,
-    )
-    .map_err(|err| {
-        let message = err.to_string();
-        let _ = db::complete_import_run(&conn, run_id, "error", 0, 0, 0, 0, &[], &message);
-        if let Some(job) = reporter {
-            job.fail(message.clone(), Vec::new());
-        }
-        message
-    })?;
+    let mut parsed = run_importer_parse(state, &base_path, &btg_password, &parse_scope_paths)
+        .map_err(|err| {
+            let message = err.to_string();
+            let _ = db::complete_import_run(
+                &conn,
+                run_id,
+                "error",
+                0,
+                0,
+                0,
+                0,
+                &pre_parse_warnings,
+                &message,
+            );
+            if let Some(job) = reporter {
+                job.fail(message.clone(), pre_parse_warnings.clone());
+            }
+            message
+        })?;
+    parsed.warnings.extend(pre_parse_warnings);
+    parsed.source_files.extend(skipped_source_files);
+    if let Some(response) = complete_if_cancel_requested(
+        &mut conn,
+        run_id,
+        reporter,
+        &parsed.source_files,
+        &parsed.warnings,
+    )? {
+        return Ok(response);
+    }
     let files_discovered = parsed.source_files.len() as i64;
     reporter.map(|job| {
         job.running(
@@ -633,6 +945,15 @@ fn run_import_pipeline(
         }
         message
     })?;
+    if let Some(response) = complete_if_cancel_requested(
+        &mut conn,
+        run_id,
+        reporter,
+        &parsed.source_files,
+        &parsed.warnings,
+    )? {
+        return Ok(response);
+    }
 
     let import_result = (|| -> Result<(usize, usize, String, Vec<ImportRunFileItem>), String> {
         let tx = conn.transaction().map_err(|err| err.to_string())?;
@@ -677,6 +998,13 @@ fn run_import_pipeline(
 
         let total_transactions = parsed.transactions.len() as i64;
         for (index, tx_item) in parsed.transactions.iter().enumerate() {
+            if index == 0 || index % 100 == 0 {
+                if let Some(job) = reporter {
+                    if job.cancel_requested() {
+                        return Err("__import_job_cancelled__".to_string());
+                    }
+                }
+            }
             let counters = counters_by_hash
                 .entry(tx_item.source_file_hash.clone())
                 .or_default();
@@ -741,6 +1069,11 @@ fn run_import_pipeline(
                 }
             }
         }
+        if let Some(job) = reporter {
+            if job.cancel_requested() {
+                return Err("__import_job_cancelled__".to_string());
+            }
+        }
 
         reporter.map(|job| {
             job.running(
@@ -795,6 +1128,19 @@ fn run_import_pipeline(
             Ok(response)
         }
         Err(message) => {
+            if message == "__import_job_cancelled__" {
+                let response = complete_cancelled_import_run(
+                    &mut conn,
+                    run_id,
+                    &parsed.source_files,
+                    &parsed.warnings,
+                    IMPORT_CANCELLED_MESSAGE,
+                )?;
+                if let Some(job) = reporter {
+                    job.finalize(response.clone(), IMPORT_CANCELLED_MESSAGE);
+                }
+                return Ok(response);
+            }
             let _ = db::complete_import_run(
                 &conn,
                 run_id,
@@ -823,6 +1169,26 @@ pub fn import_scan(
     Ok(ImportScanResponse {
         candidates: output.candidates,
     })
+}
+
+#[tauri::command]
+pub fn import_preflight(
+    state: State<AppState>,
+    base_path: String,
+    reprocess: Option<bool>,
+    failed_only: Option<bool>,
+    scope: Option<ImportRunScope>,
+) -> Result<ImportPreflightResponse, String> {
+    let conn = db::open_connection().map_err(|err| err.to_string())?;
+    db::init_database(&conn).map_err(|err| err.to_string())?;
+    build_import_preflight(
+        &state,
+        &conn,
+        &base_path,
+        reprocess.unwrap_or(false),
+        failed_only.unwrap_or(false),
+        scope,
+    )
 }
 
 #[tauri::command]
@@ -943,6 +1309,26 @@ pub fn import_job_status(
 }
 
 #[tauri::command]
+pub fn import_job_cancel(
+    state: State<AppState>,
+    job_id: String,
+) -> Result<ImportJobStatusResponse, String> {
+    let normalized_job_id = job_id.trim();
+    if normalized_job_id.is_empty() {
+        return Err("Informe um job de importacao valido para cancelar.".to_string());
+    }
+
+    if state.get_import_job(normalized_job_id).is_none() {
+        return Err("Job de importacao nao encontrado.".to_string());
+    }
+
+    let _ = state.request_import_job_cancel(normalized_job_id);
+    state
+        .get_import_job(normalized_job_id)
+        .ok_or_else(|| "Job de importacao nao encontrado.".to_string())
+}
+
+#[tauri::command]
 pub fn import_history(
     base_path: Option<String>,
     limit: Option<i64>,
@@ -1017,6 +1403,133 @@ pub fn transactions_update_category(
 }
 
 #[tauri::command]
+pub fn transactions_apply_decision(
+    input: TransactionDecisionInput,
+) -> Result<TransactionDecisionResponse, String> {
+    if input.transaction_id <= 0 {
+        return Err("Transação inválida para categorização.".to_string());
+    }
+
+    let mut conn = db::open_connection().map_err(|err| err.to_string())?;
+    db::init_database(&conn).map_err(|err| err.to_string())?;
+    let tx = conn.transaction().map_err(|err| err.to_string())?;
+
+    let transaction_payload: Option<(String, String, String, String)> = tx
+        .query_row(
+            "SELECT source_type, flow_type, merchant_normalized, description_raw
+             FROM transactions
+             WHERE id = ?1
+             LIMIT 1",
+            params![input.transaction_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .optional()
+        .map_err(|err| err.to_string())?;
+
+    let Some((source_type, flow_type, merchant_normalized, description_raw)) = transaction_payload else {
+        return Err("Transação não encontrada para categorização.".to_string());
+    };
+
+    let category_id = input.category_id.trim().to_string();
+    let subcategory_id = input.subcategory_id.trim().to_string();
+    let updated = db::update_transactions_category(
+        &tx,
+        &[input.transaction_id],
+        &category_id,
+        &subcategory_id,
+    )
+    .map_err(|err| err.to_string())?;
+
+    let mut rule_id = None;
+    if updated > 0 && input.save_as_rule {
+        if category_id.is_empty() {
+            return Err("Selecione uma categoria antes de salvar como regra.".to_string());
+        }
+        let direction = match flow_type.as_str() {
+            "income" => "income",
+            "expense" | "expense_adjustment" => "expense",
+            _ => {
+                return Err(
+                    "Somente fluxos de entrada ou saída aceitam criação de regra automática."
+                        .to_string(),
+                )
+            }
+        };
+
+        let merchant_pattern = if merchant_normalized.trim().is_empty() {
+            description_raw.trim().to_string()
+        } else {
+            merchant_normalized.trim().to_string()
+        };
+        if merchant_pattern.is_empty() {
+            return Err("Não foi possível inferir padrão textual para criar a regra.".to_string());
+        }
+
+        let normalized_rule = normalize_rule_input(RuleUpsertInput {
+            id: None,
+            source_type,
+            direction: direction.to_string(),
+            merchant_pattern,
+            amount_min_cents: None,
+            amount_max_cents: None,
+            category_id,
+            subcategory_id,
+            confidence: 0.9,
+        })
+        .map_err(|err| err.to_string())?;
+        validate_rule_input(&tx, &normalized_rule).map_err(|err| err.to_string())?;
+        rule_id = Some(db::upsert_rule(&tx, &normalized_rule).map_err(|err| err.to_string())?);
+    }
+
+    tx.commit().map_err(|err| err.to_string())?;
+    Ok(TransactionDecisionResponse {
+        updated: updated > 0,
+        rule_id,
+    })
+}
+
+#[tauri::command]
+pub fn transactions_suggestions(
+    input: TransactionSuggestionsInput,
+) -> Result<TransactionSuggestionsResponse, String> {
+    let conn = db::open_connection().map_err(|err| err.to_string())?;
+    db::init_database(&conn).map_err(|err| err.to_string())?;
+
+    let requested_ids = input
+        .transaction_ids
+        .into_iter()
+        .filter(|item| *item > 0)
+        .collect::<HashSet<_>>();
+    let requested_ids = if requested_ids.is_empty() {
+        None
+    } else {
+        Some(requested_ids)
+    };
+    let limit = input.limit.unwrap_or(160).clamp(1, 300) as usize;
+    let items = compute_auto_categorization_matches(&conn, requested_ids.as_ref())
+        .map_err(|err| err.to_string())?
+        .into_iter()
+        .take(limit)
+        .map(|item| {
+            let explanation = build_auto_categorization_explanation(&item);
+            TransactionSuggestionItem {
+                transaction_id: item.tx_id,
+                rule_id: item.rule_id,
+                score: item.score,
+                confidence: item.confidence,
+                usage_count: item.usage_count,
+                category_id: item.category_id,
+                category_name: item.category_name,
+                subcategory_id: item.subcategory_id,
+                subcategory_name: item.subcategory_name,
+                explanation,
+            }
+        })
+        .collect();
+    Ok(TransactionSuggestionsResponse { items })
+}
+
+#[tauri::command]
 pub fn categories_list() -> Result<Vec<CategoryTreeItem>, String> {
     let conn = db::open_connection().map_err(|err| err.to_string())?;
     db::init_database(&conn).map_err(|err| err.to_string())?;
@@ -1032,6 +1545,24 @@ pub fn categories_upsert(input: CategoryUpsertInput) -> Result<CategoryUpsertRes
 }
 
 #[tauri::command]
+pub fn categories_usage_summary() -> Result<CategoryCatalogUsageResponse, String> {
+    let conn = db::open_connection().map_err(|err| err.to_string())?;
+    db::init_database(&conn).map_err(|err| err.to_string())?;
+    db::category_catalog_usage(&conn).map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+pub fn categories_delete(input: CategoryDeleteInput) -> Result<SettingsSimpleResponse, String> {
+    let conn = db::open_connection().map_err(|err| err.to_string())?;
+    db::init_database(&conn).map_err(|err| err.to_string())?;
+    let deleted = db::delete_category(&conn, &input.category_id).map_err(|err| err.to_string())?;
+    if deleted == 0 {
+        return Err("Categoria nao encontrada para exclusao.".to_string());
+    }
+    Ok(SettingsSimpleResponse { ok: true })
+}
+
+#[tauri::command]
 pub fn subcategories_upsert(
     input: SubcategoryUpsertInput,
 ) -> Result<SubcategoryUpsertResponse, String> {
@@ -1039,6 +1570,20 @@ pub fn subcategories_upsert(
     db::init_database(&conn).map_err(|err| err.to_string())?;
     let subcategory_id = db::upsert_subcategory(&conn, &input).map_err(|err| err.to_string())?;
     Ok(SubcategoryUpsertResponse { subcategory_id })
+}
+
+#[tauri::command]
+pub fn subcategories_delete(
+    input: SubcategoryDeleteInput,
+) -> Result<SettingsSimpleResponse, String> {
+    let conn = db::open_connection().map_err(|err| err.to_string())?;
+    db::init_database(&conn).map_err(|err| err.to_string())?;
+    let deleted =
+        db::delete_subcategory(&conn, &input.subcategory_id).map_err(|err| err.to_string())?;
+    if deleted == 0 {
+        return Err("Subcategoria nao encontrada para exclusao.".to_string());
+    }
+    Ok(SettingsSimpleResponse { ok: true })
 }
 
 #[tauri::command]
@@ -1161,8 +1706,13 @@ pub fn projection_run(input: ProjectionInput) -> Result<ProjectionResponse, Stri
         read_projection_scenario(&conn, &scenario).map_err(|err| err.to_string())?;
     let (avg_income, avg_expense) =
         average_monthly_income_expense(&conn).map_err(|err| err.to_string())?;
-    let current_balance = latest_balance_snapshot(&conn).map_err(|err| err.to_string())?;
+    let current_balance = projection_starting_cash_balance(&conn).map_err(|err| err.to_string())?;
+    let months_ahead = input.months_ahead.max(1).min(120);
+    let now = Utc::now().date_naive();
     let installments = projected_installments(&conn).map_err(|err| err.to_string())?;
+    let scheduled_projection =
+        scheduled_projection_for_period(&conn, now, months_ahead, current_balance)
+            .map_err(|err| err.to_string())?;
     let goals = db::list_goals(&conn).map_err(|err| err.to_string())?;
     let scenario_allocations =
         db::list_goal_allocations(&conn, &scenario).map_err(|err| err.to_string())?;
@@ -1181,7 +1731,6 @@ pub fn projection_run(input: ProjectionInput) -> Result<ProjectionResponse, Stri
             .max(0.0)
     };
 
-    let months_ahead = input.months_ahead.max(1).min(120);
     let goal_allocation_total = goals
         .iter()
         .map(|goal| allocation_for_goal(goal.id, goal.allocation_percent))
@@ -1189,7 +1738,6 @@ pub fn projection_run(input: ProjectionInput) -> Result<ProjectionResponse, Stri
     let goal_allocation_capped = goal_allocation_total.min(100.0);
     let mut projection = Vec::new();
     let mut balance = current_balance;
-    let now = Utc::now().date_naive();
 
     for month_offset in 0..months_ahead {
         let month_date = add_months(now, month_offset as i32);
@@ -1248,6 +1796,7 @@ pub fn projection_run(input: ProjectionInput) -> Result<ProjectionResponse, Stri
 
     Ok(ProjectionResponse {
         monthly_projection: projection,
+        scheduled_projection,
         goal_progress: progress,
     })
 }
@@ -1368,6 +1917,23 @@ pub fn settings_auto_import_get() -> Result<SettingsAutoImportResponse, String> 
 }
 
 #[tauri::command]
+pub fn settings_pick_import_base_path(
+    current_path: Option<String>,
+) -> Result<Option<String>, String> {
+    let mut dialog = rfd::FileDialog::new().set_title("Selecionar pasta base de importação");
+    if let Some(path) = current_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        dialog = dialog.set_directory(path);
+    }
+    Ok(dialog
+        .pick_folder()
+        .map(|selected| selected.to_string_lossy().to_string()))
+}
+
+#[tauri::command]
 pub fn settings_auto_import_set(
     input: SettingsAutoImportSetInput,
 ) -> Result<SettingsAutoImportResponse, String> {
@@ -1430,6 +1996,7 @@ pub fn settings_feature_flags_get() -> Result<SettingsFeatureFlagsResponse, Stri
     let conn = db::open_connection().map_err(|err| err.to_string())?;
     db::init_database(&conn).map_err(|err| err.to_string())?;
     let flags = db::read_feature_flags(&conn).map_err(|err| err.to_string())?;
+    let _ = db::write_feature_flags(&conn, flags.clone());
     Ok(SettingsFeatureFlagsResponse { flags })
 }
 
@@ -1762,9 +2329,9 @@ fn validate_rule_input(conn: &Connection, input: &RuleUpsertInput) -> Result<()>
     if !input.source_type.is_empty() && input.source_type.len() > 64 {
         return Err(anyhow!("Fonte da regra excede o tamanho maximo permitido."));
     }
-    if !input.direction.is_empty() && !matches!(input.direction.as_str(), "income" | "expense") {
+    if !matches!(input.direction.as_str(), "income" | "expense") {
         return Err(anyhow!(
-            "Direcao da regra invalida. Use income, expense ou vazio."
+            "Direcao da regra invalida. Use income ou expense."
         ));
     }
     if input.merchant_pattern.len() > 120 {
@@ -1782,7 +2349,20 @@ fn validate_rule_input(conn: &Connection, input: &RuleUpsertInput) -> Result<()>
             ));
         }
     }
-    validate_category_subcategory_pair(conn, &input.category_id, &input.subcategory_id)
+    validate_category_subcategory_pair(conn, &input.category_id, &input.subcategory_id)?;
+
+    let category_kind = db::read_category_kind(conn, &input.category_id)?;
+    if category_kind == "neutral" {
+        return Err(anyhow!(
+            "Regras automáticas só podem usar categorias de entrada ou saída."
+        ));
+    }
+    if category_kind != input.direction {
+        return Err(anyhow!(
+            "Direção da regra incompatível com a natureza da categoria selecionada."
+        ));
+    }
+    Ok(())
 }
 
 fn normalize_manual_transaction_input(
@@ -1824,7 +2404,12 @@ fn validate_manual_transaction_input(
         }
     }
 
-    validate_category_subcategory_pair(conn, &input.category_id, &input.subcategory_id)
+    validate_category_subcategory_for_flow(
+        conn,
+        &input.category_id,
+        &input.subcategory_id,
+        &input.flow_type,
+    )
 }
 
 fn normalize_manual_balance_snapshot_input(
@@ -1906,7 +2491,12 @@ fn validate_recurring_template_input(
         }
     }
 
-    validate_category_subcategory_pair(conn, &input.category_id, &input.subcategory_id)
+    validate_category_subcategory_for_flow(
+        conn,
+        &input.category_id,
+        &input.subcategory_id,
+        &input.direction,
+    )
 }
 
 fn normalize_budget_input(mut input: BudgetUpsertInput) -> Result<BudgetUpsertInput> {
@@ -1925,7 +2515,7 @@ fn validate_budget_input(conn: &Connection, input: &BudgetUpsertInput) -> Result
     if input.limit_cents <= 0 {
         return Err(anyhow!("Limite do orcamento deve ser maior que zero."));
     }
-    validate_category_subcategory_pair(conn, &input.category_id, &input.subcategory_id)
+    validate_category_subcategory_for_flow(conn, &input.category_id, &input.subcategory_id, "expense")
 }
 
 fn normalize_month(raw: &str) -> Result<String> {
@@ -2057,6 +2647,20 @@ fn validate_category_subcategory_pair(
         ));
     }
     Ok(())
+}
+
+fn validate_category_subcategory_for_flow(
+    conn: &Connection,
+    category_id: &str,
+    subcategory_id: &str,
+    flow_type: &str,
+) -> Result<()> {
+    validate_category_subcategory_pair(conn, category_id, subcategory_id)?;
+    if category_id.trim().is_empty() {
+        return Ok(());
+    }
+    let category_kind = db::read_category_kind(conn, category_id)?;
+    db::validate_category_kind_for_flow(flow_type, category_id, Some(&category_kind))
 }
 
 fn run_importer_scan(state: &AppState, base_path: &str) -> Result<ImporterScanOutput> {
@@ -2324,6 +2928,7 @@ struct AutoCategorizationRule {
     subcategory_id: String,
     subcategory_name: String,
     confidence: f64,
+    usage_count: i64,
 }
 
 #[derive(Clone)]
@@ -2340,6 +2945,13 @@ struct AutoCategorizationMatch {
     category_name: String,
     subcategory_id: String,
     subcategory_name: String,
+    confidence: f64,
+    usage_count: i64,
+    rule_source_type: String,
+    rule_direction: String,
+    merchant_pattern: String,
+    amount_min_cents: Option<i64>,
+    amount_max_cents: Option<i64>,
 }
 
 fn load_auto_categorization_rules(conn: &Connection) -> Result<Vec<AutoCategorizationRule>> {
@@ -2355,7 +2967,8 @@ fn load_auto_categorization_rules(conn: &Connection) -> Result<Vec<AutoCategoriz
            IFNULL(c.name, ''),
            IFNULL(r.subcategory_id, ''),
            IFNULL(s.name, ''),
-           r.confidence
+           r.confidence,
+           r.usage_count
          FROM categorization_rules r
          LEFT JOIN categories c ON c.id = r.category_id
          LEFT JOIN subcategories s ON s.id = r.subcategory_id
@@ -2375,6 +2988,7 @@ fn load_auto_categorization_rules(conn: &Connection) -> Result<Vec<AutoCategoriz
             subcategory_id: row.get(8)?,
             subcategory_name: row.get(9)?,
             confidence: row.get(10)?,
+            usage_count: row.get(11)?,
         })
     })?;
 
@@ -2385,7 +2999,10 @@ fn load_auto_categorization_rules(conn: &Connection) -> Result<Vec<AutoCategoriz
     Ok(rules)
 }
 
-fn compute_auto_categorization_matches(conn: &Connection) -> Result<Vec<AutoCategorizationMatch>> {
+fn compute_auto_categorization_matches(
+    conn: &Connection,
+    requested_ids: Option<&HashSet<i64>>,
+) -> Result<Vec<AutoCategorizationMatch>> {
     let rules = load_auto_categorization_rules(conn)?;
     if rules.is_empty() {
         return Ok(Vec::new());
@@ -2395,7 +3012,7 @@ fn compute_auto_categorization_matches(conn: &Connection) -> Result<Vec<AutoCate
         "SELECT id, occurred_at, source_type, amount_cents, flow_type, merchant_normalized, description_raw
          FROM transactions
          WHERE (category_id IS NULL OR category_id = '')
-           AND flow_type IN ('income', 'expense')
+           AND flow_type IN ('income', 'expense', 'expense_adjustment')
          ORDER BY occurred_at DESC, id DESC",
     )?;
 
@@ -2414,6 +3031,11 @@ fn compute_auto_categorization_matches(conn: &Connection) -> Result<Vec<AutoCate
     let mut matches = Vec::new();
     for tx in tx_rows {
         let (tx_id, occurred_at, source_type, amount_cents, flow_type, merchant, description) = tx?;
+        if let Some(ids) = requested_ids {
+            if !ids.contains(&tx_id) {
+                continue;
+            }
+        }
         let direction = if flow_type == "income" {
             "income"
         } else {
@@ -2483,6 +3105,13 @@ fn compute_auto_categorization_matches(conn: &Connection) -> Result<Vec<AutoCate
                 category_name: rule.category_name,
                 subcategory_id: rule.subcategory_id,
                 subcategory_name: rule.subcategory_name,
+                confidence: rule.confidence,
+                usage_count: rule.usage_count,
+                rule_source_type: rule.source_type,
+                rule_direction: rule.direction,
+                merchant_pattern: rule.merchant_pattern,
+                amount_min_cents: rule.amount_min_cents,
+                amount_max_cents: rule.amount_max_cents,
             });
         }
     }
@@ -2490,11 +3119,48 @@ fn compute_auto_categorization_matches(conn: &Connection) -> Result<Vec<AutoCate
     Ok(matches)
 }
 
+fn build_auto_categorization_explanation(item: &AutoCategorizationMatch) -> Vec<String> {
+    let mut explanation = Vec::new();
+    if !item.merchant_pattern.trim().is_empty() {
+        explanation.push(format!(
+            "Descricao/estabelecimento combina com \"{}\".",
+            item.merchant_pattern.trim()
+        ));
+    }
+    if !item.rule_direction.trim().is_empty() {
+        let direction_label = if item.rule_direction == "income" {
+            "receita"
+        } else {
+            "despesa"
+        };
+        explanation.push(format!("Fluxo compativel com a regra: {direction_label}."));
+    }
+    if !item.rule_source_type.trim().is_empty() {
+        explanation.push(format!(
+            "Fonte compativel com a regra: {}.",
+            item.rule_source_type.trim()
+        ));
+    }
+    if item.amount_min_cents.is_some() || item.amount_max_cents.is_some() {
+        explanation.push("Faixa de valor compativel com a regra.".to_string());
+    }
+    if item.usage_count > 0 {
+        explanation.push(format!(
+            "Regra ja reaproveitada {} vez(es).",
+            item.usage_count
+        ));
+    }
+    if explanation.is_empty() {
+        explanation.push("Compatibilidade estrutural com a regra cadastrada.".to_string());
+    }
+    explanation
+}
+
 fn dry_run_auto_categorization(
     conn: &Connection,
     sample_limit: Option<i64>,
 ) -> Result<RulesDryRunResponse> {
-    let matches = compute_auto_categorization_matches(conn)?;
+    let matches = compute_auto_categorization_matches(conn, None)?;
     let max_sample = sample_limit.unwrap_or(12).clamp(1, 50) as usize;
     let sample = matches
         .iter()
@@ -2522,7 +3188,7 @@ fn dry_run_auto_categorization(
 }
 
 fn apply_auto_categorization(conn: &Connection) -> Result<usize> {
-    let matches = compute_auto_categorization_matches(conn)?;
+    let matches = compute_auto_categorization_matches(conn, None)?;
     if matches.is_empty() {
         return Ok(0);
     }
@@ -2556,14 +3222,14 @@ fn apply_auto_categorization(conn: &Connection) -> Result<usize> {
 fn dashboard_kpis(conn: &Connection, input: &DashboardInput) -> Result<(String, DashboardKpis)> {
     let filter = match input.basis.as_str() {
         "cashflow" => "(account_type = 'checking' AND flow_type IN ('income', 'expense', 'credit_card_payment'))",
-        _ => "(flow_type IN ('income', 'expense'))",
+        _ => "(flow_type IN ('income', 'expense', 'expense_adjustment'))",
     }
     .to_string();
 
     let query = format!(
         "SELECT
-           IFNULL(SUM(CASE WHEN amount_cents > 0 THEN amount_cents ELSE 0 END), 0) AS income,
-           IFNULL(SUM(CASE WHEN amount_cents < 0 THEN amount_cents ELSE 0 END), 0) AS expense,
+           IFNULL(SUM(CASE WHEN flow_type = 'income' THEN amount_cents ELSE 0 END), 0) AS income,
+           IFNULL(SUM(CASE WHEN flow_type IN ('expense', 'expense_adjustment') THEN amount_cents ELSE 0 END), 0) AS expense,
            IFNULL(COUNT(1), 0) AS tx_count
          FROM transactions
          WHERE date(occurred_at) >= date(?1)
@@ -2596,8 +3262,8 @@ fn dashboard_series(
     let query = format!(
         "SELECT
            substr(occurred_at, 1, 7) AS month,
-           IFNULL(SUM(CASE WHEN amount_cents > 0 THEN amount_cents ELSE 0 END), 0) AS income,
-           IFNULL(SUM(CASE WHEN amount_cents < 0 THEN amount_cents ELSE 0 END), 0) AS expense
+           IFNULL(SUM(CASE WHEN flow_type = 'income' THEN amount_cents ELSE 0 END), 0) AS income,
+           IFNULL(SUM(CASE WHEN flow_type IN ('expense', 'expense_adjustment') THEN amount_cents ELSE 0 END), 0) AS expense
          FROM transactions
          WHERE date(occurred_at) >= date(?1)
            AND date(occurred_at) <= date(?2)
@@ -2631,15 +3297,17 @@ fn dashboard_top_categories(
     filter: &str,
 ) -> Result<Vec<CategoryBreakdown>> {
     let query = format!(
-        "SELECT IFNULL(t.category_id, 'uncategorized'), IFNULL(c.name, 'Sem categoria'), ABS(SUM(t.amount_cents)) AS total
+        "SELECT
+           IFNULL(t.category_id, 'uncategorized'),
+           IFNULL(c.name, 'Sem categoria'),
+           ABS(SUM(CASE WHEN t.flow_type IN ('expense', 'expense_adjustment') THEN t.amount_cents ELSE 0 END)) AS total
          FROM transactions t
          LEFT JOIN categories c ON c.id = t.category_id
          WHERE date(t.occurred_at) >= date(?1)
            AND date(t.occurred_at) <= date(?2)
-           AND t.flow_type = 'expense'
-           AND t.amount_cents < 0
            AND {filter}
          GROUP BY IFNULL(t.category_id, 'uncategorized'), IFNULL(c.name, 'Sem categoria')
+         HAVING SUM(CASE WHEN t.flow_type IN ('expense', 'expense_adjustment') THEN t.amount_cents ELSE 0 END) < 0
          ORDER BY total DESC
          LIMIT 8"
     );
@@ -2675,9 +3343,9 @@ fn average_monthly_income_expense(conn: &Connection) -> Result<(i64, i64)> {
     let mut stmt = conn.prepare(
         "SELECT competence_month,
                 SUM(CASE WHEN flow_type = 'income' THEN amount_cents ELSE 0 END) AS income,
-                SUM(CASE WHEN flow_type = 'expense' THEN amount_cents ELSE 0 END) AS expense
+                SUM(CASE WHEN flow_type IN ('expense', 'expense_adjustment') THEN amount_cents ELSE 0 END) AS expense
          FROM transactions
-         WHERE flow_type IN ('income', 'expense')
+         WHERE flow_type IN ('income', 'expense', 'expense_adjustment')
          GROUP BY competence_month
          ORDER BY competence_month DESC
          LIMIT 6",
@@ -2701,20 +3369,17 @@ fn average_monthly_income_expense(conn: &Connection) -> Result<(i64, i64)> {
     Ok((income_sum / count, expense_sum / count))
 }
 
-fn latest_balance_snapshot(conn: &Connection) -> Result<i64> {
-    let mut stmt = conn.prepare(
-        "SELECT amount_cents
-         FROM transactions
-         WHERE flow_type = 'balance_snapshot'
-         ORDER BY occurred_at DESC
-         LIMIT 1",
-    )?;
+fn projection_starting_cash_balance(conn: &Connection) -> Result<i64> {
+    let account_type = "checking";
+    let snapshot = db::latest_balance_snapshot_for_account(conn, account_type)?;
 
-    let result = stmt.query_row([], |row| row.get(0));
-    match result {
-        Ok(value) => Ok(value),
-        Err(_) => Ok(0),
+    if let Some((snapshot_cents, snapshot_at)) = snapshot {
+        let after_snapshot =
+            db::account_non_snapshot_total_after(conn, account_type, &snapshot_at)?;
+        return Ok(snapshot_cents + after_snapshot);
     }
+
+    db::account_non_snapshot_total_all_time(conn, account_type)
 }
 
 fn recurring_delta_for_month(
@@ -2841,6 +3506,136 @@ fn projected_installments(conn: &Connection) -> Result<HashMap<String, i64>> {
     }
 
     Ok(out)
+}
+
+fn scheduled_projection_for_period(
+    conn: &Connection,
+    projection_anchor: NaiveDate,
+    months_ahead: i64,
+    current_balance: i64,
+) -> Result<Vec<ProjectionScheduledItem>> {
+    let horizon_month = add_months(projection_anchor, months_ahead.saturating_sub(1) as i32);
+    let horizon_end = NaiveDate::from_ymd_opt(
+        horizon_month.year(),
+        horizon_month.month(),
+        last_day_of_month(horizon_month.year(), horizon_month.month()),
+    )
+    .ok_or_else(|| anyhow!("Nao foi possivel calcular horizonte final da projecao."))?;
+
+    let mut events: Vec<(NaiveDate, String, String, i64)> = Vec::new();
+
+    let mut recurring_stmt = conn.prepare(
+        "SELECT name, direction, amount_cents, day_of_month, start_date, end_date
+         FROM recurring_templates
+         WHERE active = 1",
+    )?;
+    let recurring_rows = recurring_stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, i64>(2)?,
+            row.get::<_, i64>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, Option<String>>(5)?,
+        ))
+    })?;
+
+    for row in recurring_rows {
+        let (name, direction, amount_cents, day_of_month, start_date_raw, end_date_raw) = row?;
+        let Some(start_date) = parse_date_only(&start_date_raw) else {
+            continue;
+        };
+        let end_date = end_date_raw.as_ref().and_then(|raw| parse_date_only(raw));
+        for month_offset in 0..months_ahead {
+            let month_date = add_months(projection_anchor, month_offset as i32);
+            let effective_day = day_of_month.clamp(
+                1,
+                last_day_of_month(month_date.year(), month_date.month()) as i64,
+            ) as u32;
+            let Some(occurrence_date) =
+                NaiveDate::from_ymd_opt(month_date.year(), month_date.month(), effective_day)
+            else {
+                continue;
+            };
+
+            if occurrence_date < projection_anchor
+                || occurrence_date < start_date
+                || occurrence_date > horizon_end
+            {
+                continue;
+            }
+            if let Some(end_date) = end_date {
+                if occurrence_date > end_date {
+                    continue;
+                }
+            }
+
+            let signed_amount = if direction == "income" {
+                amount_cents.abs()
+            } else {
+                -amount_cents.abs()
+            };
+            let label = if name.trim().is_empty() {
+                "Recorrencia".to_string()
+            } else {
+                name.trim().to_string()
+            };
+            events.push((
+                occurrence_date,
+                label,
+                "recurring".to_string(),
+                signed_amount,
+            ));
+        }
+    }
+
+    let mut manual_stmt = conn.prepare(
+        "SELECT occurred_at, description_raw, amount_cents
+         FROM transactions
+         WHERE is_manual = 1
+           AND flow_type IN ('income', 'expense')
+         ORDER BY occurred_at ASC, id ASC",
+    )?;
+    let manual_rows = manual_stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, i64>(2)?,
+        ))
+    })?;
+
+    for row in manual_rows {
+        let (occurred_at, description_raw, amount_cents) = row?;
+        let Some(date) = parse_date_only(&occurred_at) else {
+            continue;
+        };
+        if date < projection_anchor || date > horizon_end {
+            continue;
+        }
+        let label = if description_raw.trim().is_empty() {
+            "Lancamento manual".to_string()
+        } else {
+            description_raw.trim().to_string()
+        };
+        events.push((date, label, "manual".to_string(), amount_cents));
+    }
+
+    events.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+
+    let mut balance = current_balance;
+    Ok(events
+        .into_iter()
+        .map(|(date, label, source_kind, amount_cents)| {
+            balance += amount_cents;
+            ProjectionScheduledItem {
+                date: date.format("%Y-%m-%d").to_string(),
+                label,
+                source_kind,
+                amount_cents,
+                balance_cents: balance,
+            }
+        })
+        .collect())
 }
 
 fn normalize_installment_base_description(value: &str) -> String {
@@ -3010,6 +3805,45 @@ mod tests {
     }
 
     #[test]
+    fn filter_scan_candidates_by_scope_honors_include_paths() {
+        let candidates = vec![
+            ImportCandidate {
+                source_type: "nubank_card_ofx".to_string(),
+                path: r"C:\Dados\a.ofx".to_string(),
+                name: "a.ofx".to_string(),
+                size_bytes: 10,
+                hash: "hash-a".to_string(),
+            },
+            ImportCandidate {
+                source_type: "btg_checking_xls".to_string(),
+                path: r"C:\Dados\b.xls".to_string(),
+                name: "b.xls".to_string(),
+                size_bytes: 12,
+                hash: "hash-b".to_string(),
+            },
+        ];
+        let filtered =
+            filter_scan_candidates_by_scope(candidates, &[r"C:\Dados\b.xls".to_string()]);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].path, r"C:\Dados\b.xls");
+    }
+
+    #[test]
+    fn to_skipped_hash_source_file_sets_expected_status() {
+        let candidate = ImportCandidate {
+            source_type: "nubank_card_ofx".to_string(),
+            path: r"C:\Dados\a.ofx".to_string(),
+            name: "a.ofx".to_string(),
+            size_bytes: 10,
+            hash: "hash-a".to_string(),
+        };
+        let skipped = to_skipped_hash_source_file(&candidate);
+        assert_eq!(skipped.status, "skipped_hash");
+        assert_eq!(skipped.hash, "hash-a");
+        assert_eq!(skipped.transaction_count, 0);
+    }
+
+    #[test]
     fn validate_manual_transaction_rejects_incoherent_sign() {
         let conn = setup_conn();
         let input = normalize_manual_transaction_input(ManualTransactionInput {
@@ -3084,6 +3918,159 @@ mod tests {
     }
 
     #[test]
+    fn scheduled_projection_combines_recurring_and_manual_items_in_date_order() {
+        let conn = setup_conn();
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO recurring_templates (
+                name, direction, amount_cents, day_of_month, start_date, end_date,
+                category_id, subcategory_id, notes, active
+             ) VALUES (
+                'Internet', 'expense', 12000, 15, '2026-01-01', NULL,
+                '', '', '', 1
+             )",
+            [],
+        )
+        .expect("failed to insert recurring template");
+        conn.execute(
+            "INSERT INTO transactions (
+               source_type, source_file_hash, external_ref, dedup_fingerprint, account_type, occurred_at,
+               competence_month, amount_cents, currency, description_raw, merchant_normalized,
+               category_id, subcategory_id, flow_type, metadata_json, is_manual, created_at, updated_at
+             ) VALUES (
+               'manual', 'seed', '', 'future-manual-income-1', 'checking', '2026-03-20',
+               '2026-03', 50000, 'BRL', 'Freelance', 'freelance',
+               NULL, NULL, 'income', '{}', 1, ?1, ?1
+             )",
+            params![now],
+        )
+        .expect("failed to insert future manual transaction");
+
+        let items = scheduled_projection_for_period(
+            &conn,
+            NaiveDate::from_ymd_opt(2026, 3, 10).expect("valid anchor date"),
+            2,
+            100_000,
+        )
+        .expect("scheduled projection should succeed");
+
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0].date, "2026-03-15");
+        assert_eq!(items[0].label, "Internet");
+        assert_eq!(items[0].source_kind, "recurring");
+        assert_eq!(items[0].amount_cents, -12_000);
+        assert_eq!(items[0].balance_cents, 88_000);
+
+        assert_eq!(items[1].date, "2026-03-20");
+        assert_eq!(items[1].label, "Freelance");
+        assert_eq!(items[1].source_kind, "manual");
+        assert_eq!(items[1].amount_cents, 50_000);
+        assert_eq!(items[1].balance_cents, 138_000);
+
+        assert_eq!(items[2].date, "2026-04-15");
+        assert_eq!(items[2].source_kind, "recurring");
+        assert_eq!(items[2].balance_cents, 126_000);
+    }
+
+    #[test]
+    fn projection_starting_cash_balance_uses_checking_snapshot_with_post_snapshot_delta() {
+        let conn = setup_conn();
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO transactions (
+               source_type, source_file_hash, external_ref, dedup_fingerprint, account_type, occurred_at,
+               competence_month, amount_cents, currency, description_raw, merchant_normalized,
+               category_id, subcategory_id, flow_type, metadata_json, is_manual, created_at, updated_at
+             ) VALUES (
+               'manual', 'seed', '', 'projection-checking-snapshot', 'checking', '2026-03-01T23:59:00',
+               '2026-03', 100_000, 'BRL', 'Snapshot checking', 'snapshot checking',
+               NULL, NULL, 'balance_snapshot', '{}', 1, ?1, ?1
+             )",
+            params![&now],
+        )
+        .expect("failed to insert checking snapshot");
+        conn.execute(
+            "INSERT INTO transactions (
+               source_type, source_file_hash, external_ref, dedup_fingerprint, account_type, occurred_at,
+               competence_month, amount_cents, currency, description_raw, merchant_normalized,
+               category_id, subcategory_id, flow_type, metadata_json, is_manual, created_at, updated_at
+             ) VALUES (
+               'manual', 'seed', '', 'projection-checking-income-after', 'checking', '2026-03-05T09:00:00',
+               '2026-03', 5_000, 'BRL', 'Income after snapshot', 'income after snapshot',
+               NULL, NULL, 'income', '{}', 1, ?1, ?1
+             )",
+            params![&now],
+        )
+        .expect("failed to insert checking post-snapshot movement");
+        conn.execute(
+            "INSERT INTO transactions (
+               source_type, source_file_hash, external_ref, dedup_fingerprint, account_type, occurred_at,
+               competence_month, amount_cents, currency, description_raw, merchant_normalized,
+               category_id, subcategory_id, flow_type, metadata_json, is_manual, created_at, updated_at
+             ) VALUES (
+               'manual', 'seed', '', 'projection-credit-card-snapshot', 'credit_card', '2026-03-10T23:59:00',
+               '2026-03', 999_999, 'BRL', 'Snapshot cartao', 'snapshot cartao',
+               NULL, NULL, 'balance_snapshot', '{}', 1, ?1, ?1
+             )",
+            params![&now],
+        )
+        .expect("failed to insert credit card snapshot");
+
+        let starting_balance =
+            projection_starting_cash_balance(&conn).expect("projection balance should succeed");
+        assert_eq!(starting_balance, 105_000);
+    }
+
+    #[test]
+    fn projection_starting_cash_balance_falls_back_to_checking_ledger_when_no_snapshot_exists() {
+        let conn = setup_conn();
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO transactions (
+               source_type, source_file_hash, external_ref, dedup_fingerprint, account_type, occurred_at,
+               competence_month, amount_cents, currency, description_raw, merchant_normalized,
+               category_id, subcategory_id, flow_type, metadata_json, is_manual, created_at, updated_at
+             ) VALUES (
+               'manual', 'seed', '', 'projection-checking-income-no-snapshot', 'checking', '2026-02-05T12:00:00',
+               '2026-02', 80_000, 'BRL', 'Income checking', 'income checking',
+               NULL, NULL, 'income', '{}', 1, ?1, ?1
+             )",
+            params![&now],
+        )
+        .expect("failed to insert checking income");
+        conn.execute(
+            "INSERT INTO transactions (
+               source_type, source_file_hash, external_ref, dedup_fingerprint, account_type, occurred_at,
+               competence_month, amount_cents, currency, description_raw, merchant_normalized,
+               category_id, subcategory_id, flow_type, metadata_json, is_manual, created_at, updated_at
+             ) VALUES (
+               'manual', 'seed', '', 'projection-checking-expense-no-snapshot', 'checking', '2026-02-06T12:00:00',
+               '2026-02', -30_000, 'BRL', 'Expense checking', 'expense checking',
+               NULL, NULL, 'expense', '{}', 1, ?1, ?1
+             )",
+            params![&now],
+        )
+        .expect("failed to insert checking expense");
+        conn.execute(
+            "INSERT INTO transactions (
+               source_type, source_file_hash, external_ref, dedup_fingerprint, account_type, occurred_at,
+               competence_month, amount_cents, currency, description_raw, merchant_normalized,
+               category_id, subcategory_id, flow_type, metadata_json, is_manual, created_at, updated_at
+             ) VALUES (
+               'manual', 'seed', '', 'projection-credit-card-snapshot-no-snapshot', 'credit_card', '2026-02-07T23:59:00',
+               '2026-02', 400_000, 'BRL', 'Snapshot cartao', 'snapshot cartao',
+               NULL, NULL, 'balance_snapshot', '{}', 1, ?1, ?1
+             )",
+            params![&now],
+        )
+        .expect("failed to insert unrelated credit-card snapshot");
+
+        let starting_balance =
+            projection_starting_cash_balance(&conn).expect("projection balance should succeed");
+        assert_eq!(starting_balance, 50_000);
+    }
+
+    #[test]
     fn dry_run_returns_preview_without_mutating_transactions() {
         let conn = setup_conn();
         conn.execute(
@@ -3129,6 +4116,50 @@ mod tests {
             )
             .expect("failed to read transaction category");
         assert!(category_after.is_none(), "dry-run must not mutate data");
+    }
+
+    #[test]
+    fn transactions_suggestions_expose_explanation_and_usage() {
+        let conn = setup_conn();
+        conn.execute(
+            "INSERT INTO categorization_rules (
+               source_type, direction, merchant_pattern, amount_min_cents, amount_max_cents,
+               category_id, subcategory_id, confidence, usage_count, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8, ?9, ?9)",
+            params![
+                "manual",
+                "expense",
+                "mercado",
+                5_000_i64,
+                50_000_i64,
+                "alimentacao",
+                0.60_f64,
+                4_i64,
+                Utc::now().to_rfc3339()
+            ],
+        )
+        .expect("failed to insert rule");
+
+        conn.execute(
+            "INSERT INTO transactions (
+               source_type, source_file_hash, external_ref, dedup_fingerprint, account_type, occurred_at,
+               competence_month, amount_cents, currency, description_raw, merchant_normalized,
+               category_id, subcategory_id, flow_type, metadata_json, is_manual, created_at, updated_at
+             ) VALUES (
+               'manual', 'seed', '', 'suggestion-rule-1', 'checking', '2026-03-01T12:00:00',
+               '2026-03', -12_300, 'BRL', 'Compra Mercado Centro', 'mercado centro',
+               NULL, NULL, 'expense', '{}', 1, ?1, ?1
+             )",
+            params![Utc::now().to_rfc3339()],
+        )
+        .expect("failed to insert transaction");
+
+        let suggestions =
+            compute_auto_categorization_matches(&conn, None).expect("suggestions should pass");
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions[0].usage_count, 4);
+        let explanation = build_auto_categorization_explanation(&suggestions[0]);
+        assert!(explanation.iter().any(|item| item.contains("mercado")));
     }
 
     #[test]

@@ -132,13 +132,47 @@ describe('tauri commands browser mock - import center history', () => {
   })
 })
 
+describe('tauri commands browser mock - feature flags compatibility', () => {
+  beforeEach(() => {
+    setBrowserMockWindow()
+  })
+
+  it('normalizes legacy payload and persists only active V2 flags', async () => {
+    const scope = globalThis as unknown as { window: Window & typeof globalThis }
+    scope.window.localStorage.setItem(
+      'garlic.mock.feature-flags-v1',
+      JSON.stringify({
+        newLayoutEnabled: false,
+        onboardingEnabled: false,
+        idleTabPrefetchEnabled: false,
+      }),
+    )
+
+    const response = await commands.settingsFeatureFlagsGet()
+    expect(response.flags.idleTabPrefetchEnabled).toBe(false)
+    expect(response.flags.v2AsyncJobsEnabled).toBe(true)
+
+    const persistedRaw = scope.window.localStorage.getItem('garlic.mock.feature-flags-v1')
+    expect(persistedRaw).toBeTruthy()
+    const persisted = JSON.parse(persistedRaw ?? '{}') as Record<string, unknown>
+    expect(Object.keys(persisted).sort()).toEqual(['idleTabPrefetchEnabled', 'v2AsyncJobsEnabled'])
+    expect(persisted.newLayoutEnabled).toBeUndefined()
+    expect(persisted.onboardingEnabled).toBeUndefined()
+  })
+})
+
 describe('tauri commands browser mock - categorization rules', () => {
   beforeEach(() => {
     setBrowserMockWindow()
   })
 
   it('supports rules CRUD in browser mode', async () => {
-    await commands.categoriesUpsert({ id: 'alimentacao', name: 'Alimentação', color: '#e07a5f' })
+    await commands.categoriesUpsert({
+      id: 'alimentacao',
+      name: 'Alimentação',
+      color: '#e07a5f',
+      kind: 'expense',
+    })
 
     const { ruleId } = await commands.rulesUpsert({
       sourceType: 'manual',
@@ -210,6 +244,101 @@ describe('tauri commands browser mock - categorization rules', () => {
 
     const previewAfterApply = await commands.rulesDryRun(10)
     expect(previewAfterApply.matchedCount).toBe(0)
+  })
+
+  it('returns explainable transaction suggestions in browser mode', async () => {
+    const scope = globalThis as unknown as { window: Window & typeof globalThis }
+    scope.window.localStorage.setItem(
+      'garlic.mock.transactions-v1',
+      JSON.stringify([
+        {
+          id: 902,
+          sourceType: 'manual',
+          accountType: 'checking',
+          occurredAt: '2026-03-04',
+          amountCents: -9800,
+          flowType: 'expense',
+          descriptionRaw: 'Mercado Bairro',
+          merchantNormalized: 'mercado bairro',
+          categoryId: '',
+          categoryName: '',
+          subcategoryId: '',
+          subcategoryName: '',
+          needsReview: true,
+        },
+      ]),
+    )
+
+    const { ruleId } = await commands.rulesUpsert({
+      sourceType: 'manual',
+      direction: 'expense',
+      merchantPattern: 'mercado',
+      amountMinCents: 5000,
+      amountMaxCents: 20000,
+      categoryId: 'alimentacao',
+      subcategoryId: 'alimentacao_mercado',
+      confidence: 0.7,
+    })
+
+    const suggestions = await commands.transactionsSuggestions([902], 10)
+    expect(suggestions.items).toHaveLength(1)
+    expect(suggestions.items[0]?.ruleId).toBe(ruleId)
+    expect(suggestions.items[0]?.categoryId).toBe('alimentacao')
+    expect(suggestions.items[0]?.explanation.join(' ')).toMatch(/mercado/i)
+  })
+})
+
+describe('tauri commands browser mock - category catalog safeguards', () => {
+  beforeEach(() => {
+    setBrowserMockWindow()
+  })
+
+  it('summarizes usage and blocks category deletion when the catalog is still referenced', async () => {
+    const scope = globalThis as unknown as { window: Window & typeof globalThis }
+    scope.window.localStorage.setItem(
+      'garlic.mock.transactions-v1',
+      JSON.stringify([
+        {
+          id: 990,
+          sourceType: 'manual',
+          accountType: 'checking',
+          occurredAt: '2026-03-05',
+          amountCents: -12500,
+          flowType: 'expense',
+          descriptionRaw: 'Mercado Centro',
+          merchantNormalized: 'mercado centro',
+          categoryId: 'alimentacao',
+          categoryName: 'Alimentação',
+          subcategoryId: 'alimentacao_mercado',
+          subcategoryName: 'Mercado',
+          needsReview: false,
+        },
+      ]),
+    )
+
+    const usage = await commands.categoriesUsageSummary()
+    expect(usage.categories.alimentacao?.transactionCount).toBe(1)
+    expect(usage.categories.alimentacao?.subcategoryCount).toBeGreaterThan(0)
+
+    await expect(commands.categoriesDelete('alimentacao')).rejects.toThrow(/vinculada/i)
+  })
+
+  it('allows deleting free subcategories in browser mode', async () => {
+    const { categoryId } = await commands.categoriesUpsert({
+      name: 'Pets',
+      color: '#123456',
+      kind: 'expense',
+    })
+    const { subcategoryId } = await commands.subcategoriesUpsert({
+      categoryId,
+      name: 'Cinema',
+    })
+
+    await expect(commands.subcategoriesDelete(subcategoryId)).resolves.toEqual({ ok: true })
+
+    const categories = await commands.categoriesList()
+    const lazer = categories.find((item) => item.id === categoryId)
+    expect(lazer?.subcategories.some((item) => item.id === subcategoryId)).toBe(false)
   })
 })
 

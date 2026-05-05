@@ -1,5 +1,5 @@
 export const ONBOARDING_GUIDE_STEPS: Array<{
-  id: 'import' | 'categorize' | 'dashboard' | 'projection'
+  id: 'import' | 'categories_setup' | 'dashboard' | 'projection'
   title: string
   description: string
   tab: 'settings' | 'transactions' | 'dashboard' | 'planning'
@@ -11,10 +11,11 @@ export const ONBOARDING_GUIDE_STEPS: Array<{
     tab: 'settings',
   },
   {
-    id: 'categorize',
-    title: '2. Revisar categorias',
-    description: 'Abra Transações e categorize os itens pendentes com fila de revisão.',
-    tab: 'transactions',
+    id: 'categories_setup',
+    title: '2. Configurar categorias',
+    description:
+      'Revise o catálogo padrão e crie categorias de entrada, saída e neutras antes da revisão em lote.',
+    tab: 'settings',
   },
   {
     id: 'dashboard',

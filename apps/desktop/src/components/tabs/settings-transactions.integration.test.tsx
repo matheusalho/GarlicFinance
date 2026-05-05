@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { FormEvent } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -11,6 +11,7 @@ import type {
   CategorizationRuleItem,
   CategoryTreeItem,
   RulesDryRunResponse,
+  TransactionSuggestionItem,
   TransactionItem,
 } from '../../types'
 
@@ -19,12 +20,14 @@ const categoryTree: CategoryTreeItem[] = [
     id: 'alimentacao',
     name: 'Alimentacao',
     color: '#f4a261',
+    kind: 'expense',
     subcategories: [{ id: 'mercado', categoryId: 'alimentacao', name: 'Mercado' }],
   },
   {
     id: 'moradia',
     name: 'Moradia',
     color: '#457b9d',
+    kind: 'expense',
     subcategories: [{ id: 'aluguel', categoryId: 'moradia', name: 'Aluguel' }],
   },
 ]
@@ -103,13 +106,77 @@ const tx2: TransactionItem = {
   needsReview: true,
 }
 
+const tx3: TransactionItem = {
+  id: 303,
+  sourceType: 'manual',
+  accountType: 'checking',
+  occurredAt: '2026-02-20',
+  amountCents: -250000,
+  flowType: 'expense',
+  descriptionRaw: 'Aluguel anual',
+  merchantNormalized: 'aluguel anual',
+  categoryId: '',
+  categoryName: '',
+  subcategoryId: '',
+  subcategoryName: '',
+  needsReview: true,
+}
+
+const tx4: TransactionItem = {
+  id: 304,
+  sourceType: 'manual',
+  accountType: 'checking',
+  occurredAt: '2026-03-03',
+  amountCents: 5000,
+  flowType: 'income',
+  descriptionRaw: 'Reembolso fornecedor',
+  merchantNormalized: 'reembolso fornecedor',
+  categoryId: '',
+  categoryName: '',
+  subcategoryId: '',
+  subcategoryName: '',
+  needsReview: true,
+}
+
+const tx5: TransactionItem = {
+  id: 305,
+  sourceType: 'manual',
+  accountType: 'checking',
+  occurredAt: '2026-01-15',
+  amountCents: -1800,
+  flowType: 'expense',
+  descriptionRaw: 'Cinema bairro',
+  merchantNormalized: 'cinema bairro',
+  categoryId: '',
+  categoryName: '',
+  subcategoryId: '',
+  subcategoryName: '',
+  needsReview: true,
+}
+
+const suggestionForTx3: TransactionSuggestionItem = {
+  transactionId: 303,
+  ruleId: 11,
+  score: 0.91,
+  confidence: 0.8,
+  usageCount: 12,
+  categoryId: 'moradia',
+  categoryName: 'Moradia',
+  subcategoryId: 'aluguel',
+  subcategoryName: 'Aluguel',
+  explanation: ['Descricao/estabelecimento combina com "aluguel".', 'Regra ja reaproveitada 12 vez(es).'],
+}
+
 function buildSettingsProps() {
   return {
     loading: false,
     importJob: null,
     importBusy: false,
+    canCancelImport: false,
     basePath: 'C:\\ArquivosFinance',
     onBasePathChange: vi.fn(),
+    onPickBasePath: vi.fn(),
+    onCancelImport: vi.fn(),
     autoImportEnabled: false,
     autoImportLoaded: true,
     onToggleAutoImport: vi.fn(),
@@ -148,7 +215,7 @@ function buildSettingsProps() {
           transactionCount: 0,
           insertedCount: 0,
           dedupedCount: 0,
-          errorMessage: 'Senha inválida',
+          errorMessage: 'Senha invalida',
           observedAt: '2026-03-07T10:01:00Z',
         },
       ],
@@ -174,25 +241,64 @@ function buildSettingsProps() {
     passwordTestOk: null,
     newCategoryName: '',
     newCategoryColor: '#f4a261',
+    newCategoryKind: 'expense' as const,
     onNewCategoryNameChange: vi.fn(),
     onNewCategoryColorChange: vi.fn(),
+    onNewCategoryKindChange: vi.fn(),
     onCreateCategory: (event: FormEvent) => event.preventDefault(),
     categories: categoryTree,
+    categoryCatalogUsage: {
+      categories: {
+        alimentacao: {
+          transactionCount: 2,
+          ruleCount: 1,
+          recurringCount: 0,
+          budgetCount: 1,
+          subcategoryCount: 1,
+        },
+        moradia: {
+          transactionCount: 0,
+          ruleCount: 0,
+          recurringCount: 0,
+          budgetCount: 0,
+          subcategoryCount: 1,
+        },
+      },
+      subcategories: {
+        mercado: {
+          transactionCount: 2,
+          ruleCount: 1,
+          recurringCount: 0,
+          budgetCount: 1,
+          subcategoryCount: 0,
+        },
+        aluguel: {
+          transactionCount: 0,
+          ruleCount: 0,
+          recurringCount: 0,
+          budgetCount: 0,
+          subcategoryCount: 0,
+        },
+      },
+    },
     categoryDrafts: {},
     onCategoryDraftNameChange: vi.fn(),
     onCategoryDraftColorChange: vi.fn(),
+    onCategoryDraftKindChange: vi.fn(),
     onSaveCategory: vi.fn(),
+    onDeleteCategory: vi.fn(async () => undefined),
     newSubcategoryCategoryId: 'alimentacao',
     newSubcategoryName: '',
     onNewSubcategoryCategoryIdChange: vi.fn(),
     onNewSubcategoryNameChange: vi.fn(),
     onCreateSubcategory: (event: FormEvent) => event.preventDefault(),
-    categoryOptions: categoryTree.map((item) => ({ id: item.id, label: item.name })),
+    categoryOptions: categoryTree.map((item) => ({ id: item.id, label: item.name, kind: item.kind })),
     allSubcategories: categoryTree.flatMap((item) => item.subcategories),
     subcategoryDrafts: {},
     onSubcategoryDraftCategoryChange: vi.fn(),
     onSubcategoryDraftNameChange: vi.fn(),
     onSaveSubcategory: vi.fn(),
+    onDeleteSubcategory: vi.fn(async () => undefined),
     rules,
     rulesDryRun: dryRunResponse,
     onRuleUpsert: vi.fn(async () => undefined),
@@ -209,12 +315,6 @@ function buildSettingsProps() {
     },
     onPreferencesChange: vi.fn(),
     featureFlags: {
-      newLayoutEnabled: true,
-      newDashboardEnabled: true,
-      newTransactionsEnabled: true,
-      newPlanningEnabled: true,
-      newSettingsEnabled: true,
-      onboardingEnabled: true,
       idleTabPrefetchEnabled: true,
       v2AsyncJobsEnabled: true,
     },
@@ -232,12 +332,12 @@ describe('integration flows - transactions and settings business regressions', (
 
     render(<SettingsTab {...props} />)
 
-    expect(screen.getByText(/Central de Importação 2.0/i)).toBeTruthy()
-    expect(screen.getByText(/Histórico recente, último status por arquivo/i)).toBeTruthy()
-    expect(screen.getAllByText(/BTG Cartão/i).length).toBeGreaterThanOrEqual(1)
-    expect(screen.getByText(/Senha inválida/i)).toBeTruthy()
+    expect(screen.getByText(/Central de Importa.*o 2.0/i)).toBeTruthy()
+    expect(screen.getByText(/Hist.rico recente, .ltimo status por arquivo/i)).toBeTruthy()
+    expect(screen.getAllByText(/BTG Cart.o/i).length).toBeGreaterThanOrEqual(1)
+    expect(screen.getByText(/Senha invalida/i)).toBeTruthy()
 
-    await user.click(screen.getByRole('button', { name: /Atualizar histórico/i }))
+    await user.click(screen.getByRole('button', { name: /Atualizar hist.rico/i }))
 
     expect(props.onRefreshImportHistory).toHaveBeenCalledTimes(1)
 
@@ -263,9 +363,9 @@ describe('integration flows - transactions and settings business regressions', (
           totalCount: 4,
           steps: [
             { id: 'import', title: 'Importar dados', done: true },
-            { id: 'categorize', title: 'Revisar categorias', done: true },
+            { id: 'categories_setup', title: 'Revisar categorias', done: true },
             { id: 'dashboard', title: 'Explorar dashboard', done: false },
-            { id: 'projection', title: 'Rodar projeção', done: false },
+            { id: 'projection', title: 'Rodar proje..o', done: false },
           ],
           nextStepTitle: 'Explorar dashboard',
           primaryAction: {
@@ -277,20 +377,27 @@ describe('integration flows - transactions and settings business regressions', (
     )
 
     expect(screen.getByText(/Onboarding guiado em aberto/i)).toBeTruthy()
-    expect(screen.getByText(/Próxima etapa recomendada:/i)).toBeTruthy()
+    expect(screen.getByText(/Pr.xima etapa recomendada:/i)).toBeTruthy()
 
     await user.click(screen.getByRole('button', { name: /Retomar onboarding/i }))
 
     expect(onResumeOnboarding).toHaveBeenCalledTimes(1)
   })
 
-  it('covers transactions filters, remote pagination controls and category update callback', async () => {
+  it(
+    'covers transactions filters, inbox prioritization and category update callback',
+    async () => {
     const user = userEvent.setup()
     const onApplyFilters = vi.fn()
     const onClearFilters = vi.fn()
     const onPageChange = vi.fn()
     const onRowsPerPageChange = vi.fn()
     const onUpdateCategory = vi.fn()
+    const onBatchUpdateCategory = vi.fn<
+      (transactionIds: number[], categoryId: string, subcategoryId: string) => Promise<number>
+    >(async () => 3)
+    const onApplySuggestion = vi.fn()
+    const onApplyReviewDecision = vi.fn(async () => true)
 
     render(
       <TransactionsTab
@@ -316,37 +423,92 @@ describe('integration flows - transactions and settings business regressions', (
         onPageChange={onPageChange}
         onRowsPerPageChange={onRowsPerPageChange}
         transactions={{
-          items: [tx1, tx2],
-          totals: { incomeCents: 0, expenseCents: -21200, netCents: -21200 },
-          totalCount: 2,
+          items: [tx1, tx2, tx3, tx4],
+          totals: { incomeCents: 5000, expenseCents: -270700, netCents: -265700 },
+          totalCount: 4,
         }}
-        reviewQueue={{ items: [tx1], totalCount: 1 }}
+        reviewQueue={{ items: [tx1, tx2, tx3, tx4, tx5], totalCount: 5 }}
         hasImportedFinancialData={true}
-        categoryOptions={categoryTree.map((item) => ({ id: item.id, label: item.name }))}
+        categoryOptions={categoryTree.map((item) => ({ id: item.id, label: item.name, kind: item.kind }))}
         subcategoriesByCategory={{
           alimentacao: categoryTree[0]?.subcategories ?? [],
           moradia: categoryTree[1]?.subcategories ?? [],
         }}
+        suggestionsByTransactionId={{ 303: suggestionForTx3 }}
         flowLabel={(flowType) => flowType}
         onUpdateCategory={onUpdateCategory}
+        onBatchUpdateCategory={onBatchUpdateCategory}
+        onApplySuggestion={onApplySuggestion}
+        onApplyReviewDecision={onApplyReviewDecision}
         mode="advanced"
       />,
     )
+    const reviewPanel = screen.getByText(/Inbox de revis/i).closest('section')
+    expect(reviewPanel).toBeTruthy()
+    if (!reviewPanel) return
 
     expect(screen.getByText(/Busca:/i)).toBeTruthy()
     expect(screen.getByText(/Fluxo:/i)).toBeTruthy()
     expect(screen.getByText(/Fonte:/i)).toBeTruthy()
+    expect(screen.getByText(/Ordena.*operacional aplicada/i)).toBeTruthy()
+    expect(within(reviewPanel).getByText(/Aluguel anual/i)).toBeTruthy()
+    expect(within(reviewPanel).getByText(/Reembolso fornecedor/i)).toBeTruthy()
+    expect(within(reviewPanel).queryByText(/Cinema bairro/i)).toBeNull()
+    expect(within(reviewPanel).getByText(/Sugest.*pronta/i)).toBeTruthy()
+    expect(within(reviewPanel).getByText(/Moradia \/ Aluguel/i)).toBeTruthy()
 
     await user.click(screen.getByRole('button', { name: /Aplicar filtros/i }))
     await user.click(screen.getByRole('button', { name: /Limpar tudo/i }))
     expect(onApplyFilters).toHaveBeenCalledTimes(1)
     expect(onClearFilters).toHaveBeenCalledTimes(1)
 
+    const tailBucketButton = within(reviewPanel)
+      .getAllByRole('listitem')
+      .find((item) => item.tagName === 'BUTTON' && item.textContent?.includes('Cauda operacional'))
+    expect(tailBucketButton).toBeTruthy()
+    if (!tailBucketButton) return
+
+    await user.click(tailBucketButton)
+    expect(within(reviewPanel).getByText(/Mercado Central/i)).toBeTruthy()
+    expect(within(reviewPanel).getByText(/Padaria Bairro/i)).toBeTruthy()
+    expect(within(reviewPanel).getByText(/Cinema bairro/i)).toBeTruthy()
+
+    const allBucketButton = within(reviewPanel)
+      .getAllByRole('listitem')
+      .find((item) => item.tagName === 'BUTTON' && item.textContent?.includes('Tudo'))
+    expect(allBucketButton).toBeTruthy()
+    if (!allBucketButton) return
+
+    await user.click(allBucketButton)
+    await user.click(screen.getByRole('button', { name: /Aplicar sugest/i }))
+    expect(onApplySuggestion).toHaveBeenCalledWith(expect.objectContaining({ id: 303 }), suggestionForTx3)
+
+    await user.click(tailBucketButton)
+    await user.click(screen.getByRole('button', { name: /Selecionar bucket/i }))
+    expect(screen.getByText(/3 selecionadas/i)).toBeTruthy()
+
+    const batchCategorySelect = screen.getByLabelText(/^Categoria do lote$/i)
+    await user.selectOptions(batchCategorySelect, 'moradia')
+    const batchSubcategorySelect = screen.getByLabelText(/^Subcategoria do lote$/i)
+    await user.selectOptions(batchSubcategorySelect, 'aluguel')
+    await user.click(screen.getByRole('button', { name: /Aplicar em 3 selecionada/i }))
+
+    await waitFor(() => expect(onBatchUpdateCategory).toHaveBeenCalledTimes(1))
+    const firstBatchCall = onBatchUpdateCategory.mock.calls[0] as [number[], string, string] | undefined
+    expect(firstBatchCall).toBeTruthy()
+    if (!firstBatchCall) return
+    const [batchIds, batchCategoryId, batchSubcategoryId] = firstBatchCall
+    expect(batchIds).toEqual(expect.arrayContaining([301, 302, 305]))
+    expect(batchIds).toHaveLength(3)
+    expect(batchCategoryId).toBe('moradia')
+    expect(batchSubcategoryId).toBe('aluguel')
+    await waitFor(() => expect(screen.getByText(/0 selecionadas/i)).toBeTruthy())
+
     await user.click(screen.getByRole('button', { name: /Expandir tabela/i }))
-    expect(screen.getByText(/P.*gina 2 de 2/i)).toBeTruthy()
+    expect(screen.getByText(/P.*gina 4 de 4/i)).toBeTruthy()
 
     await user.click(screen.getByRole('button', { name: /Anterior/i }))
-    expect(onPageChange).toHaveBeenCalledWith(1)
+    expect(onPageChange).toHaveBeenCalledWith(3)
 
     const rowsPerPageSelect = screen.getByLabelText(/Linhas por p.*gina/i)
     await user.selectOptions(rowsPerPageSelect, '10')
@@ -355,6 +517,111 @@ describe('integration flows - transactions and settings business regressions', (
     const tableCategorySelect = screen.getAllByLabelText(/Categoria da transa/i)[0] as HTMLSelectElement
     await user.selectOptions(tableCategorySelect, 'alimentacao')
     expect(onUpdateCategory).toHaveBeenCalledWith(expect.objectContaining({ id: 301 }), 'alimentacao', '')
+    },
+    10000,
+  )
+
+  it('allows saving a manual categorization as a reusable rule directly from review', async () => {
+    const user = userEvent.setup()
+    const categorizedReviewItem: TransactionItem = {
+      ...tx1,
+      categoryId: 'alimentacao',
+      categoryName: 'Alimentacao',
+      subcategoryId: 'mercado',
+      subcategoryName: 'Mercado',
+      needsReview: true,
+    }
+    const onApplyReviewDecision = vi.fn(async () => true)
+
+    render(
+      <TransactionsTab
+        loading={false}
+        hasPendingTxFilterChanges={false}
+        txFiltersDraft={{ search: '', flowType: '', sourceType: '' }}
+        flowOptions={[
+          { id: '', label: 'Todos' },
+          { id: 'income', label: 'Receita' },
+          { id: 'expense', label: 'Despesa' },
+        ]}
+        sourceOptions={[
+          { id: '', label: 'Todas' },
+          { id: 'manual', label: 'Manual' },
+        ]}
+        onSearchChange={vi.fn()}
+        onFlowTypeChange={vi.fn()}
+        onSourceTypeChange={vi.fn()}
+        onApplyFilters={vi.fn()}
+        onClearFilters={vi.fn()}
+        page={1}
+        rowsPerPage={10}
+        onPageChange={vi.fn()}
+        onRowsPerPageChange={vi.fn()}
+        transactions={{
+          items: [categorizedReviewItem],
+          totals: { incomeCents: 0, expenseCents: -12500, netCents: -12500 },
+          totalCount: 1,
+        }}
+        reviewQueue={{ items: [categorizedReviewItem], totalCount: 1 }}
+        hasImportedFinancialData={true}
+        categoryOptions={categoryTree.map((item) => ({ id: item.id, label: item.name, kind: item.kind }))}
+        subcategoriesByCategory={{
+          alimentacao: categoryTree[0]?.subcategories ?? [],
+          moradia: categoryTree[1]?.subcategories ?? [],
+        }}
+        suggestionsByTransactionId={{}}
+        flowLabel={(flowType) => flowType}
+        onUpdateCategory={vi.fn()}
+        onBatchUpdateCategory={vi.fn(async () => 0)}
+        onApplySuggestion={vi.fn()}
+        onApplyReviewDecision={onApplyReviewDecision}
+        mode="simple"
+      />,
+    )
+
+    await user.click(screen.getByRole('button', { name: /Salvar decisão \+ regra/i }))
+
+    expect(onApplyReviewDecision).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 301 }),
+      'alimentacao',
+      'mercado',
+      true,
+    )
+  })
+
+  it('covers category catalog safeguards, usage signals and delete callbacks', async () => {
+    const user = userEvent.setup()
+    const props = buildSettingsProps()
+    props.newCategoryName = 'Moradia'
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+
+    render(<SettingsTab {...props} />)
+
+    await user.click(screen.getByRole('tab', { name: /Categorias/i }))
+
+    expect(screen.getAllByText(/Em uso/i).length).toBeGreaterThan(0)
+    expect(screen.getAllByText(/Livre/i).length).toBeGreaterThan(0)
+    const usedCategoryNameInput = screen.getByLabelText(/Nome da categoria Alimenta..o/i)
+    const usedCategoryRow = usedCategoryNameInput.closest('li')
+    expect(usedCategoryRow).toBeTruthy()
+    const usageSummaryText = usedCategoryRow?.textContent ?? ''
+    expect(usageSummaryText).toContain('1 subcategoria(s)')
+    expect(usageSummaryText).toMatch(/2 transa/i)
+    expect(usageSummaryText).toContain('1 regra(s)')
+    expect(usageSummaryText).toMatch(/1 or/i)
+
+    expect(screen.getByText(/J. existe uma categoria com este nome/i)).toBeTruthy()
+    expect((screen.getByRole('button', { name: /Criar categoria/i }) as HTMLButtonElement).disabled).toBe(true)
+
+    const deleteCategoryButton = screen.getAllByRole('button', { name: /^Excluir$/i })[0]
+    await user.click(deleteCategoryButton)
+    expect(confirmSpy).toHaveBeenCalled()
+    expect(props.onDeleteCategory).toHaveBeenCalledWith('alimentacao')
+
+    const deleteSubcategoryButtons = screen.getAllByRole('button', { name: /^Excluir$/i })
+    await user.click(deleteSubcategoryButtons[deleteSubcategoryButtons.length - 1]!)
+    expect(props.onDeleteSubcategory).toHaveBeenCalledWith('aluguel')
+
+    confirmSpy.mockRestore()
   })
 
   it('covers settings rules validation, create/edit, delete confirmation and dry-run/apply actions', async () => {
@@ -431,4 +698,19 @@ describe('integration flows - transactions and settings business regressions', (
 
     confirmSpy.mockRestore()
   }, 15000)
+
+  it('keeps planning rollout as V2-only in diagnostics', async () => {
+    const user = userEvent.setup()
+    const props = buildSettingsProps()
+
+    render(<SettingsTab {...props} />)
+
+    await user.click(screen.getByRole('tab', { name: /Interface/i }))
+
+    expect(screen.queryByText(/Planejamento redesenhado/i)).toBeNull()
+    expect(screen.queryByText(/Novo layout \(Sidebar \+ Workspace\)/i)).toBeNull()
+    expect(
+      screen.getByText(/Flags de transi..o V1 foram aposentadas do runtime principal na Sprint 8.1/i),
+    ).toBeTruthy()
+  })
 })

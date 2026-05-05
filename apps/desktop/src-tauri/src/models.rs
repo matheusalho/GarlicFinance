@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -61,6 +62,16 @@ pub struct ImportCandidate {
 #[serde(rename_all = "camelCase")]
 pub struct ImportScanResponse {
     pub candidates: Vec<ImportCandidate>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportPreflightResponse {
+    pub effective_scope: ImportRunScope,
+    pub candidate_count: i64,
+    pub scoped_candidate_count: i64,
+    pub requires_btg_password: bool,
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -232,10 +243,27 @@ pub struct UpdatedCountResponse {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct TransactionDecisionInput {
+    pub transaction_id: i64,
+    pub category_id: String,
+    pub subcategory_id: String,
+    pub save_as_rule: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransactionDecisionResponse {
+    pub updated: bool,
+    pub rule_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CategoryItem {
     pub id: String,
     pub name: String,
     pub color: String,
+    pub kind: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -252,6 +280,7 @@ pub struct CategoryTreeItem {
     pub id: String,
     pub name: String,
     pub color: String,
+    pub kind: String,
     pub subcategories: Vec<SubcategoryItem>,
 }
 
@@ -261,6 +290,7 @@ pub struct CategoryUpsertInput {
     pub id: Option<String>,
     pub name: String,
     pub color: String,
+    pub kind: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -281,6 +311,35 @@ pub struct SubcategoryUpsertInput {
 #[serde(rename_all = "camelCase")]
 pub struct SubcategoryUpsertResponse {
     pub subcategory_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CategoryDeleteInput {
+    pub category_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubcategoryDeleteInput {
+    pub subcategory_id: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CategoryCatalogUsageItem {
+    pub transaction_count: i64,
+    pub rule_count: i64,
+    pub recurring_count: i64,
+    pub budget_count: i64,
+    pub subcategory_count: i64,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CategoryCatalogUsageResponse {
+    pub categories: HashMap<String, CategoryCatalogUsageItem>,
+    pub subcategories: HashMap<String, CategoryCatalogUsageItem>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -343,6 +402,35 @@ pub struct RuleDryRunItem {
 pub struct RulesDryRunResponse {
     pub matched_count: i64,
     pub sample: Vec<RuleDryRunItem>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransactionSuggestionsInput {
+    #[serde(default)]
+    pub transaction_ids: Vec<i64>,
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransactionSuggestionItem {
+    pub transaction_id: i64,
+    pub rule_id: i64,
+    pub score: f64,
+    pub confidence: f64,
+    pub usage_count: i64,
+    pub category_id: String,
+    pub category_name: String,
+    pub subcategory_id: String,
+    pub subcategory_name: String,
+    pub explanation: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransactionSuggestionsResponse {
+    pub items: Vec<TransactionSuggestionItem>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -461,6 +549,16 @@ pub struct ProjectionMonth {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ProjectionScheduledItem {
+    pub date: String,
+    pub label: String,
+    pub source_kind: String,
+    pub amount_cents: i64,
+    pub balance_cents: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GoalProjectionProgress {
     pub goal_id: i64,
     pub goal_name: String,
@@ -473,6 +571,7 @@ pub struct GoalProjectionProgress {
 #[serde(rename_all = "camelCase")]
 pub struct ProjectionResponse {
     pub monthly_projection: Vec<ProjectionMonth>,
+    pub scheduled_projection: Vec<ProjectionScheduledItem>,
     pub goal_progress: Vec<GoalProjectionProgress>,
 }
 
@@ -609,16 +708,16 @@ pub struct OnboardingStateV1 {
     pub steps_completed: Vec<String>,
 }
 
+fn feature_flag_enabled_by_default() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FeatureFlagsV1 {
-    pub new_layout_enabled: bool,
-    pub new_dashboard_enabled: bool,
-    pub new_transactions_enabled: bool,
-    pub new_planning_enabled: bool,
-    pub new_settings_enabled: bool,
-    pub onboarding_enabled: bool,
+    #[serde(default = "feature_flag_enabled_by_default")]
     pub idle_tab_prefetch_enabled: bool,
+    #[serde(default = "feature_flag_enabled_by_default")]
     pub v2_async_jobs_enabled: bool,
 }
 

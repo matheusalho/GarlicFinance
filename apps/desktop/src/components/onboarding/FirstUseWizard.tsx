@@ -16,6 +16,7 @@ interface FirstUseWizardProps {
   onActiveStepChange: (stepId: SetupStepId) => void
   basePath: string
   onBasePathChange: (value: string) => void
+  onPickBasePath: () => void
   btgPasswordInput: string
   onBtgPasswordInputChange: (value: string) => void
   btgPasswordConfigured: boolean
@@ -46,6 +47,7 @@ export function FirstUseWizard({
   onActiveStepChange,
   basePath,
   onBasePathChange,
+  onPickBasePath,
   btgPasswordInput,
   onBtgPasswordInputChange,
   btgPasswordConfigured,
@@ -138,6 +140,14 @@ export function FirstUseWizard({
               </p>
 
               <div className="gf-inline-actions">
+                <button
+                  type="button"
+                  className="gf-button ghost"
+                  disabled={loading}
+                  onClick={onPickBasePath}
+                >
+                  Selecionar pasta
+                </button>
                 <button
                   type="button"
                   className="gf-button"

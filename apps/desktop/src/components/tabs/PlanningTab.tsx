@@ -1,9 +1,10 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
 
 import { GuidedEmptyState } from '../common/GuidedEmptyState'
-import { brl } from '../../lib/format'
+import { brl, shortDate } from '../../lib/format'
 import type {
+  CategoryKind,
   GoalListItem,
   MonthlyBudgetSummaryResponse,
   ProjectionResponse,
@@ -15,12 +16,14 @@ import type {
 interface CategoryOption {
   id: string
   label: string
+  kind: CategoryKind
 }
 
 type ManualFlow = 'income' | 'expense'
 type GoalHorizon = 'short' | 'medium' | 'long'
 type RecurringDirection = 'income' | 'expense'
 type PlanningSection = 'extra' | 'recurring' | 'budget' | 'goals' | 'projection'
+type ProjectionComparisonMap = Partial<Record<ProjectionScenario, ProjectionResponse>>
 
 const SCENARIO_LABELS: Record<ProjectionScenario, string> = {
   base: 'Base',
@@ -34,7 +37,111 @@ const BUDGET_ALERT_LABELS: Record<'ok' | 'warning' | 'exceeded', string> = {
   exceeded: 'Estourado',
 }
 
-interface PlanningTabProps {
+const PROJECTION_SOURCE_LABELS: Record<string, string> = {
+  recurring: 'Recorrência',
+  manual: 'Manual',
+}
+
+const expectedCategoryKindForPlanningFlow = (flow: ManualFlow | RecurringDirection): CategoryKind =>
+  flow === 'income' ? 'income' : 'expense'
+
+interface ProjectionScenarioSummary {
+  scenario: ProjectionScenario
+  finalBalanceCents: number
+  totalNetCents: number
+  goalAllocatedCents: number
+  completedGoalsCount: number
+  totalGoalsCount: number
+  firstCompletionMonth: string | null
+  baseDeltaCents: number | null
+}
+
+interface GoalContributionPoint {
+  month: string
+  contributedCents: number
+  projectedCents: number
+}
+
+interface GoalScenarioTrail {
+  scenario: ProjectionScenario
+  allocationPercent: number
+  projectedCents: number
+  completionMonth: string
+  totalContributionCents: number
+  contributionTrail: GoalContributionPoint[]
+}
+
+function summarizeProjectionScenario(
+  scenario: ProjectionScenario,
+  response: ProjectionResponse,
+  baseFinalBalanceCents: number | null,
+): ProjectionScenarioSummary {
+  const finalMonth = response.monthlyProjection.at(-1)
+  const totalNetCents = response.monthlyProjection.reduce((total, month) => total + month.netCents, 0)
+  const goalAllocatedCents = response.monthlyProjection.reduce(
+    (total, month) => total + month.goalAllocatedCents,
+    0,
+  )
+  const completionMonths = response.goalProgress
+    .map((goal) => goal.completionMonth)
+    .filter((value) => /^\d{4}-\d{2}$/.test(value))
+    .sort()
+
+  return {
+    scenario,
+    finalBalanceCents: finalMonth?.balanceCents ?? 0,
+    totalNetCents,
+    goalAllocatedCents,
+    completedGoalsCount: completionMonths.length,
+    totalGoalsCount: response.goalProgress.length,
+    firstCompletionMonth: completionMonths[0] ?? null,
+    baseDeltaCents:
+      baseFinalBalanceCents === null ? null : (finalMonth?.balanceCents ?? 0) - baseFinalBalanceCents,
+  }
+}
+
+function parseAllocationPercent(rawValue: string, fallback: number): number {
+  const normalized = rawValue.trim().replace(',', '.')
+  const parsed = Number(normalized)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.max(0, Math.min(100, parsed))
+}
+
+function buildGoalScenarioTrail(input: {
+  goal: GoalListItem
+  scenario: ProjectionScenario
+  response: ProjectionResponse
+  scenarioAllocationPercent: number
+  totalAllocationPercent: number
+}): GoalScenarioTrail {
+  const { goal, scenario, response, scenarioAllocationPercent, totalAllocationPercent } = input
+  const goalShare = totalAllocationPercent > 0 ? scenarioAllocationPercent / totalAllocationPercent : 0
+  let projectedCents = goal.currentCents
+  const contributionTrail = response.monthlyProjection
+    .map((month) => {
+      const contributedCents = Math.round(month.goalAllocatedCents * goalShare)
+      projectedCents += contributedCents
+      return {
+        month: month.month,
+        contributedCents,
+        projectedCents,
+      }
+    })
+    .filter((item) => item.contributedCents !== 0)
+
+  const goalProgress = response.goalProgress.find((item) => item.goalId === goal.id)
+
+  return {
+    scenario,
+    allocationPercent: scenarioAllocationPercent,
+    projectedCents: goalProgress?.projectedCents ?? projectedCents,
+    completionMonth: goalProgress?.completionMonth ?? 'não atingido',
+    totalContributionCents: contributionTrail.reduce((total, item) => total + item.contributedCents, 0),
+    contributionTrail,
+  }
+}
+
+export interface PlanningTabProps {
   manualDate: string
   manualFlow: ManualFlow
   manualAmount: string
@@ -93,6 +200,8 @@ interface PlanningTabProps {
   goals: GoalListItem[]
   monthlyBudgetSummary: MonthlyBudgetSummaryResponse | null
   projection: ProjectionResponse | null
+  projectionComparisons?: ProjectionComparisonMap
+  selectedProjectionScenario?: ProjectionScenario | null
   onRunProjection: (scenario: ProjectionScenario) => void
   categoryOptions: CategoryOption[]
   subcategoriesByCategory: Record<string, SubcategoryItem[]>
@@ -161,6 +270,8 @@ export function PlanningTab({
   goals,
   monthlyBudgetSummary,
   projection,
+  projectionComparisons,
+  selectedProjectionScenario,
   onRunProjection,
   categoryOptions,
   subcategoriesByCategory,
@@ -170,11 +281,118 @@ export function PlanningTab({
   sectionHint,
 }: PlanningTabProps) {
   const [activeSection, setActiveSection] = useState<PlanningSection>(sectionHint ?? 'extra')
+  const manualCategoryOptions = useMemo(
+    () =>
+      categoryOptions.filter(
+        (option) => option.kind === expectedCategoryKindForPlanningFlow(manualFlow),
+      ),
+    [categoryOptions, manualFlow],
+  )
+  const recurringCategoryOptions = useMemo(
+    () =>
+      categoryOptions.filter(
+        (option) => option.kind === expectedCategoryKindForPlanningFlow(recurringDirection),
+      ),
+    [categoryOptions, recurringDirection],
+  )
+  const budgetCategoryOptions = useMemo(
+    () => categoryOptions.filter((option) => option.kind === 'expense'),
+    [categoryOptions],
+  )
+  const hasCompatibleManualCategory = manualCategoryOptions.some((option) => option.id === manualCategory)
+  const hasCompatibleRecurringCategory = recurringCategoryOptions.some(
+    (option) => option.id === recurringCategory,
+  )
+  const hasCompatibleBudgetCategory = budgetCategoryOptions.some((option) => option.id === budgetCategory)
+  const effectiveManualCategory = hasCompatibleManualCategory
+    ? manualCategory
+    : (manualCategoryOptions[0]?.id ?? '')
+  const effectiveRecurringCategory = hasCompatibleRecurringCategory
+    ? recurringCategory
+    : (recurringCategoryOptions[0]?.id ?? '')
+  const effectiveBudgetCategory = hasCompatibleBudgetCategory
+    ? budgetCategory
+    : (budgetCategoryOptions[0]?.id ?? '')
+  const hasManualCategoryChoices = manualCategoryOptions.length > 0
+  const hasRecurringCategoryChoices = recurringCategoryOptions.length > 0
+  const hasBudgetCategoryChoices = budgetCategoryOptions.length > 0
+
+  useEffect(() => {
+    if (effectiveManualCategory === manualCategory) return
+    onManualCategoryChange(effectiveManualCategory)
+  }, [effectiveManualCategory, manualCategory, onManualCategoryChange])
+
+  useEffect(() => {
+    if (effectiveRecurringCategory === recurringCategory) return
+    onRecurringCategoryChange(effectiveRecurringCategory)
+  }, [effectiveRecurringCategory, onRecurringCategoryChange, recurringCategory])
+
+  useEffect(() => {
+    if (effectiveBudgetCategory === budgetCategory) return
+    onBudgetCategoryChange(effectiveBudgetCategory)
+  }, [budgetCategory, effectiveBudgetCategory, onBudgetCategoryChange])
+
   const hasPlanningData =
     recurringTemplates.length > 0 ||
     goals.length > 0 ||
     (monthlyBudgetSummary?.items.length ?? 0) > 0 ||
     (projection?.monthlyProjection.length ?? 0) > 0
+  const effectiveProjectionScenario = selectedProjectionScenario ?? (projection ? 'base' : null)
+  const effectiveProjectionComparisons: ProjectionComparisonMap =
+    projectionComparisons && Object.keys(projectionComparisons).length > 0
+      ? projectionComparisons
+      : effectiveProjectionScenario && projection
+        ? { [effectiveProjectionScenario]: projection }
+        : {}
+  const baseProjection = effectiveProjectionComparisons.base
+  const baseFinalBalanceCents = baseProjection?.monthlyProjection.at(-1)?.balanceCents ?? null
+  const projectionScenarioSummaries = (['base', 'optimistic', 'pessimistic'] as ProjectionScenario[])
+    .map((scenario) => {
+      const response = effectiveProjectionComparisons[scenario]
+      return response ? summarizeProjectionScenario(scenario, response, baseFinalBalanceCents) : null
+    })
+    .filter((item): item is ProjectionScenarioSummary => item !== null)
+  const goalContributionTrails = goals.map((goal) => {
+    const scenarioAllocations = Object.fromEntries(
+      (['base', 'optimistic', 'pessimistic'] as ProjectionScenario[]).map((scenario) => [
+        scenario,
+        parseAllocationPercent(goalScenarioAllocationValue(goal.id, scenario), goal.allocationPercent),
+      ]),
+    ) as Record<ProjectionScenario, number>
+
+    const totalAllocationByScenario = (['base', 'optimistic', 'pessimistic'] as ProjectionScenario[]).reduce(
+      (accumulator, scenario) => ({
+        ...accumulator,
+        [scenario]: goals.reduce(
+          (total, currentGoal) =>
+            total +
+            parseAllocationPercent(
+              goalScenarioAllocationValue(currentGoal.id, scenario),
+              currentGoal.allocationPercent,
+            ),
+          0,
+        ),
+      }),
+      { base: 0, optimistic: 0, pessimistic: 0 } as Record<ProjectionScenario, number>,
+    )
+
+    return {
+      goal,
+      scenarios: (['base', 'optimistic', 'pessimistic'] as ProjectionScenario[])
+        .map((scenario) => {
+          const response = effectiveProjectionComparisons[scenario]
+          if (!response) return null
+          return buildGoalScenarioTrail({
+            goal,
+            scenario,
+            response,
+            scenarioAllocationPercent: scenarioAllocations[scenario],
+            totalAllocationPercent: totalAllocationByScenario[scenario],
+          })
+        })
+        .filter((item): item is GoalScenarioTrail => item !== null),
+    }
+  })
 
   return (
     <div className="gf-stack">
@@ -262,8 +480,12 @@ export function PlanningTab({
             <div className="gf-inline-grid gf-inline-grid-2">
               <label className="gf-field">
                 Categoria
-                <select value={manualCategory} onChange={(event) => onManualCategoryChange(event.target.value)}>
-                  {categoryOptions.map((option) => (
+                <select
+                  value={effectiveManualCategory}
+                  disabled={!hasManualCategoryChoices}
+                  onChange={(event) => onManualCategoryChange(event.target.value)}
+                >
+                  {manualCategoryOptions.map((option) => (
                     <option key={option.id} value={option.id}>
                       {option.label}
                     </option>
@@ -272,9 +494,13 @@ export function PlanningTab({
               </label>
               <label className="gf-field">
                 Subcategoria
-                <select value={manualSubcategory} onChange={(event) => onManualSubcategoryChange(event.target.value)}>
+                <select
+                  value={manualSubcategory}
+                  disabled={!effectiveManualCategory}
+                  onChange={(event) => onManualSubcategoryChange(event.target.value)}
+                >
                   <option value="">Sem subcategoria</option>
-                  {(subcategoriesByCategory[manualCategory] ?? []).map((sub) => (
+                  {(subcategoriesByCategory[effectiveManualCategory] ?? []).map((sub) => (
                     <option key={sub.id} value={sub.id}>
                       {sub.name}
                     </option>
@@ -282,7 +508,14 @@ export function PlanningTab({
                 </select>
               </label>
             </div>
-            <button type="submit" className="gf-button">Adicionar lançamento</button>
+            {!hasManualCategoryChoices && (
+              <p className="gf-feedback warning">
+                Não há categorias compatíveis com o tipo selecionado.
+              </p>
+            )}
+            <button type="submit" className="gf-button" disabled={!hasManualCategoryChoices}>
+              Adicionar lançamento
+            </button>
           </form>
         </section>
       )}
@@ -324,8 +557,12 @@ export function PlanningTab({
               </label>
               <label className="gf-field">
                 Categoria
-                <select value={recurringCategory} onChange={(event) => onRecurringCategoryChange(event.target.value)}>
-                  {categoryOptions.map((option) => (
+                <select
+                  value={effectiveRecurringCategory}
+                  disabled={!hasRecurringCategoryChoices}
+                  onChange={(event) => onRecurringCategoryChange(event.target.value)}
+                >
+                  {recurringCategoryOptions.map((option) => (
                     <option key={option.id} value={option.id}>
                       {option.label}
                     </option>
@@ -334,9 +571,13 @@ export function PlanningTab({
               </label>
               <label className="gf-field">
                 Subcategoria
-                <select value={recurringSubcategory} onChange={(event) => onRecurringSubcategoryChange(event.target.value)}>
+                <select
+                  value={recurringSubcategory}
+                  disabled={!effectiveRecurringCategory}
+                  onChange={(event) => onRecurringSubcategoryChange(event.target.value)}
+                >
                   <option value="">Sem subcategoria</option>
-                  {(subcategoriesByCategory[recurringCategory] ?? []).map((sub) => (
+                  {(subcategoriesByCategory[effectiveRecurringCategory] ?? []).map((sub) => (
                     <option key={sub.id} value={sub.id}>
                       {sub.name}
                     </option>
@@ -344,7 +585,14 @@ export function PlanningTab({
                 </select>
               </label>
             </div>
-            <button type="submit" className="gf-button">Salvar recorrência</button>
+            {!hasRecurringCategoryChoices && (
+              <p className="gf-feedback warning">
+                Não há categorias compatíveis com a direção selecionada.
+              </p>
+            )}
+            <button type="submit" className="gf-button" disabled={!hasRecurringCategoryChoices}>
+              Salvar recorrência
+            </button>
           </form>
 
           <ul className="gf-list">
@@ -381,8 +629,12 @@ export function PlanningTab({
               </label>
               <label className="gf-field">
                 Categoria
-                <select value={budgetCategory} onChange={(event) => onBudgetCategoryChange(event.target.value)}>
-                  {categoryOptions.map((option) => (
+                <select
+                  value={effectiveBudgetCategory}
+                  disabled={!hasBudgetCategoryChoices}
+                  onChange={(event) => onBudgetCategoryChange(event.target.value)}
+                >
+                  {budgetCategoryOptions.map((option) => (
                     <option key={option.id} value={option.id}>
                       {option.label}
                     </option>
@@ -391,9 +643,13 @@ export function PlanningTab({
               </label>
               <label className="gf-field">
                 Subcategoria
-                <select value={budgetSubcategory} onChange={(event) => onBudgetSubcategoryChange(event.target.value)}>
+                <select
+                  value={budgetSubcategory}
+                  disabled={!effectiveBudgetCategory}
+                  onChange={(event) => onBudgetSubcategoryChange(event.target.value)}
+                >
                   <option value="">Todas da categoria</option>
-                  {(subcategoriesByCategory[budgetCategory] ?? []).map((subcategory) => (
+                  {(subcategoriesByCategory[effectiveBudgetCategory] ?? []).map((subcategory) => (
                     <option key={subcategory.id} value={subcategory.id}>
                       {subcategory.name}
                     </option>
@@ -401,13 +657,20 @@ export function PlanningTab({
                 </select>
               </label>
             </div>
+            {!hasBudgetCategoryChoices && (
+              <p className="gf-feedback warning">
+                Cadastre ao menos uma categoria de saída para configurar o orçamento.
+              </p>
+            )}
             <div className="gf-inline-grid gf-inline-grid-2">
               <label className="gf-field">
                 Limite mensal (R$)
                 <input value={budgetLimit} onChange={(event) => onBudgetLimitChange(event.target.value)} placeholder="Ex: 1200" />
               </label>
               <div className="gf-inline-actions">
-                <button type="submit" className="gf-button">Salvar orçamento</button>
+            <button type="submit" className="gf-button" disabled={!hasBudgetCategoryChoices}>
+              Salvar orçamento
+            </button>
               </div>
             </div>
           </form>
@@ -537,25 +800,158 @@ export function PlanningTab({
           <header className="gf-section-header">
             <div>
               <h3>Projeções</h3>
-              <p>Compare cenários e acompanhe impacto no saldo futuro.</p>
+              <p>Compare cenários mensais e acompanhe a agenda futura com data conhecida.</p>
             </div>
           </header>
           <div className="gf-inline-actions">
-            <button type="button" className="gf-button" onClick={() => onRunProjection('base')}>Base</button>
-            <button type="button" className="gf-button secondary" onClick={() => onRunProjection('optimistic')}>Otimista</button>
-            <button type="button" className="gf-button ghost" onClick={() => onRunProjection('pessimistic')}>Pessimista</button>
+            <button
+              type="button"
+              className={effectiveProjectionScenario === 'base' ? 'gf-button' : 'gf-button ghost'}
+              onClick={() => onRunProjection('base')}
+            >
+              Base
+            </button>
+            <button
+              type="button"
+              className={effectiveProjectionScenario === 'optimistic' ? 'gf-button' : 'gf-button secondary'}
+              onClick={() => onRunProjection('optimistic')}
+            >
+              Otimista
+            </button>
+            <button
+              type="button"
+              className={effectiveProjectionScenario === 'pessimistic' ? 'gf-button' : 'gf-button ghost'}
+              onClick={() => onRunProjection('pessimistic')}
+            >
+              Pessimista
+            </button>
           </div>
-          <ul className="gf-list">
-            {(projection?.monthlyProjection ?? []).slice(0, mode === 'advanced' ? 14 : 8).map((month) => (
-              <li key={month.month}>
-                <span>{month.month} · {brl(month.netCents)}</span>
-                <strong>{brl(month.balanceCents)}</strong>
-              </li>
-            ))}
-            {(projection?.monthlyProjection?.length ?? 0) === 0 && (
-              <li className="gf-empty-inline">Nenhuma projeção calculada.</li>
+          <div className="gf-stack">
+            <h4>Comparativo de cenários</h4>
+            <div className="gf-inline-grid gf-inline-grid-3">
+              {projectionScenarioSummaries.map((summary) => (
+                <article
+                  key={summary.scenario}
+                  className={`gf-metric-card gf-projection-compare-card${
+                    summary.scenario === effectiveProjectionScenario ? ' active' : ''
+                  }`}
+                >
+                  <p>{SCENARIO_LABELS[summary.scenario]}</p>
+                  <strong>{brl(summary.finalBalanceCents)}</strong>
+                  <small>Saldo final no horizonte.</small>
+                  <small>Líquido acumulado: {brl(summary.totalNetCents)}</small>
+                  <small>Reserva para metas: {brl(summary.goalAllocatedCents)}</small>
+                  <small>
+                    Metas no horizonte: {summary.completedGoalsCount}/{summary.totalGoalsCount}
+                    {summary.firstCompletionMonth ? ` · primeira em ${summary.firstCompletionMonth}` : ''}
+                  </small>
+                  <small>
+                    {summary.baseDeltaCents === null
+                      ? 'Referência base indisponível.'
+                      : summary.scenario === 'base'
+                        ? 'Referência base para comparação.'
+                        : `Diferença vs base: ${brl(summary.baseDeltaCents)}`}
+                  </small>
+                </article>
+              ))}
+            </div>
+            {projectionScenarioSummaries.length === 0 && (
+              <p className="gf-empty-inline">Nenhum comparativo carregado. Gere uma projeção para os três cenários.</p>
             )}
-          </ul>
+          </div>
+          <div className="gf-grid gf-grid-2">
+            <div className="gf-stack">
+              <h4>
+                Curva mensal
+                {effectiveProjectionScenario ? ` · foco ${SCENARIO_LABELS[effectiveProjectionScenario]}` : ''}
+              </h4>
+              <ul className="gf-list">
+                {(projection?.monthlyProjection ?? []).slice(0, mode === 'advanced' ? 14 : 8).map((month) => (
+                  <li key={month.month}>
+                    <span>{month.month} · {brl(month.netCents)}</span>
+                    <strong>{brl(month.balanceCents)}</strong>
+                  </li>
+                ))}
+                {(projection?.monthlyProjection?.length ?? 0) === 0 && (
+                  <li className="gf-empty-inline">Nenhuma projeção calculada.</li>
+                )}
+              </ul>
+            </div>
+            <div className="gf-stack">
+              <h4>Agenda por data</h4>
+              <ul className="gf-list">
+                {(projection?.scheduledProjection ?? []).slice(0, mode === 'advanced' ? 12 : 6).map((item) => (
+                  <li key={`${item.date}-${item.label}-${item.amountCents}`} className="gf-list-stacked">
+                    <div className="gf-list-head">
+                      <strong>{shortDate(item.date)}</strong>
+                      <span className="gf-pill">{PROJECTION_SOURCE_LABELS[item.sourceKind] ?? item.sourceKind}</span>
+                    </div>
+                    <span>{item.label}</span>
+                    <div className="gf-inline-actions">
+                      <strong>{brl(item.amountCents)}</strong>
+                      <small className="gf-muted">Saldo projetado: {brl(item.balanceCents)}</small>
+                    </div>
+                  </li>
+                ))}
+                {(projection?.scheduledProjection?.length ?? 0) === 0 && (
+                  <li className="gf-empty-inline">Sem eventos futuros com data conhecida neste horizonte.</li>
+                )}
+              </ul>
+            </div>
+          </div>
+          <div className="gf-stack">
+            <h4>Trilha de contribuição por meta</h4>
+            {goalContributionTrails.length === 0 && (
+              <p className="gf-empty-inline">Cadastre metas para visualizar contribuição e conclusão por cenário.</p>
+            )}
+            {goalContributionTrails.slice(0, mode === 'advanced' ? goalContributionTrails.length : 2).map(({ goal, scenarios }) => (
+              <article key={goal.id} className="gf-card gf-goal-trail-card">
+                <header className="gf-section-header">
+                  <div>
+                    <h4>{goal.name}</h4>
+                    <p>
+                      {brl(goal.currentCents)} de {brl(goal.targetCents)} · alvo {goal.targetDate}
+                    </p>
+                  </div>
+                  <span className="gf-pill">{goal.horizon}</span>
+                </header>
+                <div className="gf-inline-grid gf-inline-grid-3">
+                  {scenarios.map((scenario) => (
+                    <article
+                      key={`${goal.id}-${scenario.scenario}`}
+                      className={`gf-metric-card gf-goal-trail-scenario${
+                        scenario.scenario === effectiveProjectionScenario ? ' active' : ''
+                      }`}
+                    >
+                      <p>{SCENARIO_LABELS[scenario.scenario]}</p>
+                      <strong>{brl(scenario.projectedCents)}</strong>
+                      <small>
+                        Conclusão:{' '}
+                        {/^\d{4}-\d{2}$/.test(scenario.completionMonth)
+                          ? scenario.completionMonth
+                          : 'não atingido'}
+                      </small>
+                      <small>Aporte total: {brl(scenario.totalContributionCents)}</small>
+                      <small>Alocação usada: {scenario.allocationPercent}%</small>
+                      <ul className="gf-list gf-goal-trail-list">
+                        {scenario.contributionTrail
+                          .slice(0, mode === 'advanced' ? 6 : 3)
+                          .map((item) => (
+                            <li key={`${goal.id}-${scenario.scenario}-${item.month}`}>
+                              <span>{item.month}</span>
+                              <strong>{brl(item.contributedCents)}</strong>
+                            </li>
+                          ))}
+                        {scenario.contributionTrail.length === 0 && (
+                          <li className="gf-empty-inline">Sem aportes previstos neste cenário.</li>
+                        )}
+                      </ul>
+                    </article>
+                  ))}
+                </div>
+              </article>
+            ))}
+          </div>
         </section>
       )}
     </div>

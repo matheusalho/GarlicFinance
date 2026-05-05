@@ -1,11 +1,12 @@
 import { useMemo, useState } from 'react'
 
-import type { CategoryTreeItem } from '../types'
+import type { CategoryKind, CategoryTreeItem } from '../types'
 
 const categoryOptionsFromTree = (categories: CategoryTreeItem[]) =>
   categories.map((category) => ({
     id: category.id,
     label: category.name,
+    kind: category.kind,
   }))
 
 export function useCategoryState(categories: CategoryTreeItem[]) {
@@ -15,7 +16,7 @@ export function useCategoryState(categories: CategoryTreeItem[]) {
   const [recurringSubcategoryRaw, setRecurringSubcategoryRaw] = useState('')
   const [newSubcategoryCategoryIdRaw, setNewSubcategoryCategoryIdRaw] = useState('')
   const [categoryDraftOverrides, setCategoryDraftOverrides] = useState<
-    Record<string, { name: string; color: string }>
+    Record<string, { name: string; color: string; kind: CategoryKind }>
   >({})
   const [subcategoryDraftOverrides, setSubcategoryDraftOverrides] = useState<
     Record<string, { name: string; categoryId: string }>
@@ -63,11 +64,12 @@ export function useCategoryState(categories: CategoryTreeItem[]) {
       : ''
 
   const categoryDrafts = useMemo(() => {
-    const drafts: Record<string, { name: string; color: string }> = {}
+    const drafts: Record<string, { name: string; color: string; kind: CategoryKind }> = {}
     for (const category of categories) {
       drafts[category.id] = categoryDraftOverrides[category.id] ?? {
         name: category.name,
         color: category.color,
+        kind: category.kind,
       }
     }
     return drafts
@@ -102,7 +104,11 @@ export function useCategoryState(categories: CategoryTreeItem[]) {
     setCategoryDraftOverrides((previous) => ({
       ...previous,
       [categoryId]: {
-        ...(previous[categoryId] ?? { name: category.name, color: category.color }),
+        ...(previous[categoryId] ?? {
+          name: category.name,
+          color: category.color,
+          kind: category.kind,
+        }),
         name: value,
       },
     }))
@@ -114,8 +120,28 @@ export function useCategoryState(categories: CategoryTreeItem[]) {
     setCategoryDraftOverrides((previous) => ({
       ...previous,
       [categoryId]: {
-        ...(previous[categoryId] ?? { name: category.name, color: category.color }),
+        ...(previous[categoryId] ?? {
+          name: category.name,
+          color: category.color,
+          kind: category.kind,
+        }),
         color: value,
+      },
+    }))
+  }
+
+  const setCategoryDraftKind = (categoryId: string, value: CategoryKind) => {
+    const category = categories.find((item) => item.id === categoryId)
+    if (!category) return
+    setCategoryDraftOverrides((previous) => ({
+      ...previous,
+      [categoryId]: {
+        ...(previous[categoryId] ?? {
+          name: category.name,
+          color: category.color,
+          kind: category.kind,
+        }),
+        kind: value,
       },
     }))
   }
@@ -162,6 +188,7 @@ export function useCategoryState(categories: CategoryTreeItem[]) {
     subcategoryDrafts,
     setCategoryDraftName,
     setCategoryDraftColor,
+    setCategoryDraftKind,
     setSubcategoryDraftCategory,
     setSubcategoryDraftName,
   }

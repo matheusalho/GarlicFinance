@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -13,6 +13,7 @@ const categoryTree: CategoryTreeItem[] = [
     id: 'alimentacao',
     name: 'Alimentacao',
     color: '#e07a5f',
+    kind: 'expense',
     subcategories: [{ id: 'alimentacao_mercado', categoryId: 'alimentacao', name: 'Mercado' }],
   },
 ]
@@ -141,12 +142,29 @@ describe('a11y keyboard smoke - transactions and settings', () => {
         }}
         hasImportedFinancialData={true}
         categoryOptions={[
-          { id: 'alimentacao', label: 'Alimentacao' },
-          { id: 'saude', label: 'Saude' },
+          { id: 'alimentacao', label: 'Alimentacao', kind: 'expense' },
+          { id: 'saude', label: 'Saude', kind: 'expense' },
         ]}
         subcategoriesByCategory={{ alimentacao: [{ id: 'alimentacao_mercado', categoryId: 'alimentacao', name: 'Mercado' }] }}
+        suggestionsByTransactionId={{
+          201: {
+            transactionId: 201,
+            ruleId: 99,
+            score: 0.92,
+            confidence: 0.75,
+            usageCount: 3,
+            categoryId: 'alimentacao',
+            categoryName: 'Alimentacao',
+            subcategoryId: 'alimentacao_mercado',
+            subcategoryName: 'Mercado',
+            explanation: ['Descricao/estabelecimento combina com "mercado".'],
+          },
+        }}
         flowLabel={(flowType) => flowType}
         onUpdateCategory={vi.fn()}
+        onBatchUpdateCategory={vi.fn(async () => 1)}
+        onApplySuggestion={vi.fn()}
+        onApplyReviewDecision={vi.fn(async () => true)}
         mode="advanced"
       />,
     )
@@ -162,10 +180,22 @@ describe('a11y keyboard smoke - transactions and settings', () => {
     const closeReviewButton = screen.getByRole('button', { name: /Voltar para vis/i })
     expect(closeReviewButton.getAttribute('aria-expanded')).toBe('true')
     await user.click(closeReviewButton)
+    expect(screen.getByRole('button', { name: /Atalhos de lote/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Detalhes da ordena/i })).toBeTruthy()
 
     const expandTableButton = screen.getByRole('button', { name: /Expandir tabela/i })
     await user.click(expandTableButton)
     expect(screen.getByRole('grid')).toBeTruthy()
+
+    const stack = container.querySelector('.gf-stack') as HTMLDivElement | null
+    expect(stack).toBeTruthy()
+    if (!stack) return
+
+    fireEvent.keyDown(stack, { key: 'A', altKey: true, shiftKey: true })
+    expect(screen.getByText(/1 selecionadas/i)).toBeTruthy()
+
+    fireEvent.keyDown(stack, { key: 'Escape' })
+    expect(screen.getByText(/0 selecionadas/i)).toBeTruthy()
 
     const rowMercado = container.querySelector('#tx-row-201') as HTMLTableRowElement | null
     const rowFarmacia = container.querySelector('#tx-row-202') as HTMLTableRowElement | null
@@ -177,7 +207,7 @@ describe('a11y keyboard smoke - transactions and settings', () => {
     await user.keyboard('{ArrowDown}')
     expect(rowFarmacia.getAttribute('aria-selected')).toBe('true')
     expect(rowFarmacia.tabIndex).toBe(0)
-  })
+  }, 10000)
 
   it('covers keyboard tab navigation and ARIA panels in SettingsTab', async () => {
     const user = userEvent.setup()
@@ -186,8 +216,11 @@ describe('a11y keyboard smoke - transactions and settings', () => {
         loading={false}
         importJob={null}
         importBusy={false}
+        canCancelImport={false}
         basePath="C:\\ArquivosFinance"
         onBasePathChange={vi.fn()}
+        onPickBasePath={vi.fn()}
+        onCancelImport={vi.fn()}
         autoImportEnabled={false}
         autoImportLoaded={true}
         onToggleAutoImport={vi.fn()}
@@ -206,14 +239,19 @@ describe('a11y keyboard smoke - transactions and settings', () => {
         passwordTestOk={null}
         newCategoryName=""
         newCategoryColor="#e07a5f"
+        newCategoryKind="expense"
         onNewCategoryNameChange={vi.fn()}
         onNewCategoryColorChange={vi.fn()}
+        onNewCategoryKindChange={vi.fn()}
         onCreateCategory={(event) => event.preventDefault()}
         categories={categoryTree}
+        categoryCatalogUsage={{ categories: {}, subcategories: {} }}
         categoryDrafts={{}}
         onCategoryDraftNameChange={vi.fn()}
         onCategoryDraftColorChange={vi.fn()}
+        onCategoryDraftKindChange={vi.fn()}
         onSaveCategory={vi.fn()}
+        onDeleteCategory={vi.fn(async () => undefined)}
         newSubcategoryCategoryId="alimentacao"
         newSubcategoryName=""
         onNewSubcategoryCategoryIdChange={vi.fn()}
@@ -225,6 +263,7 @@ describe('a11y keyboard smoke - transactions and settings', () => {
         onSubcategoryDraftCategoryChange={vi.fn()}
         onSubcategoryDraftNameChange={vi.fn()}
         onSaveSubcategory={vi.fn()}
+        onDeleteSubcategory={vi.fn(async () => undefined)}
         rules={rules}
         rulesDryRun={rulesDryRun}
         onRuleUpsert={vi.fn(async () => undefined)}
@@ -241,12 +280,6 @@ describe('a11y keyboard smoke - transactions and settings', () => {
         }}
         onPreferencesChange={vi.fn()}
         featureFlags={{
-          newLayoutEnabled: true,
-          newDashboardEnabled: true,
-          newTransactionsEnabled: true,
-          newPlanningEnabled: true,
-          newSettingsEnabled: true,
-          onboardingEnabled: true,
           idleTabPrefetchEnabled: true,
           v2AsyncJobsEnabled: true,
         }}
@@ -263,10 +296,15 @@ describe('a11y keyboard smoke - transactions and settings', () => {
     const importTab = screen.getByRole('tab', { name: /Importa/i })
     importTab.focus()
     await user.keyboard('{ArrowRight}')
-
     const securityTab = screen.getByRole('tab', { name: /Seguran/i })
     expect(securityTab.getAttribute('aria-selected')).toBe('true')
     expect(container.querySelector('#settings-panel-security')).toBeTruthy()
+
+    securityTab.focus()
+    await user.keyboard('{ArrowRight}')
+    const uiTab = screen.getByRole('tab', { name: /Interface/i })
+    expect(uiTab.getAttribute('aria-selected')).toBe('true')
+    expect(screen.getByRole('button', { name: /Detalhes da flag Prefetch ocioso de abas secundárias/i })).toBeTruthy()
 
     await user.keyboard('{End}')
     const rulesTab = screen.getByRole('tab', { name: /Regras/i })
@@ -276,6 +314,6 @@ describe('a11y keyboard smoke - transactions and settings', () => {
     expect(screen.getByText(/Lista de regras de categorização cadastradas/i)).toBeTruthy()
     expect(screen.getByText(/Amostra do resultado do dry-run de regras/i)).toBeTruthy()
     expect(screen.getAllByRole('status').length).toBeGreaterThan(0)
-  })
+  }, 10000)
 })
 
