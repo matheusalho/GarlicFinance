@@ -9,8 +9,8 @@ Ele deve ser suficiente para retomar o trabalho sem abrir o histórico detalhado
 - Ciclo ativo: `V2.1.x (hardening de publicação)`.
 - Estado do roadmap: `Sprint 1 = done`, `Sprint 2 = done`, `Sprint 3 = done`, `Sprint 4 = done`, `Sprint 5 = done`, `Sprint 6 = done`, `Sprint 7 = done`, `Sprint 8 = done`.
 - Sprint atual: `Task 0 — Release Proof And Baseline Integrity`.
-- Última entrega fechada: `Validação humana do upgrade MSI B01-B14 e hotfix visual de scroll da shell`.
-- Próximo passo único: `Consolidar Go/No-Go final de publicação da v2.1.1 e decidir tag/release a partir do branch validado`.
+- Última entrega fechada: `Validação humana do upgrade MSI B01-B14, hotfix visual de scroll da shell e auditoria de inconsistências financeiras`.
+- Próximo passo único: `Triar e corrigir FIN-001/FIN-002 com regressão dedicada, ou registrar aceite explícito antes de consolidar Go/No-Go da v2.1.1`.
 - Diretriz obrigatória: `legacy` congelado funcionalmente e sem dependência de runtime na trilha V2 publicada.
 
 ## O que Já Está Consolidado na V2
@@ -47,6 +47,7 @@ Ele deve ser suficiente para retomar o trabalho sem abrir o histórico detalhado
 - A validação assistida de 24/05 comprovou migração de dados com o executável release recompilado: schema `5 -> 7`, preservação de transações/meta/orçamento/regra, hidratação da pasta base, senha BTG validada após oscilação visual e importação incremental com `45` arquivos, `2658` novas, `4` deduplicadas e `0` avisos.
 - O complemento humano de 24/05 cobriu B01-B14 por MSI real em `human-B01-msi-upgrade/`: a `v1.0.0` abriu apenas a janela, sem renderizar a UI antiga, mas a limitação foi aceita; a `v2.1.1` instalada por cima abriu normalmente e os screenshots cobrem Dashboard, Transações, Planejamento, Importação, histórico e Segurança/senha validada.
 - Hotfix visual de 24/05 corrigiu o scroll global da shell V2: `#root` fica fixo no viewport, `html/body` nao rolam e a rolagem fica limitada a `.gf-content` ou `.gf-layout`; evidencias em `output/manual-validation/v2.1.1/2026-05-24-upgrade/layout-scroll-fix/`; MSI `2.1.1` recompilado com SHA256 `11E0547FC464D34389CC36C9B1A2AD660D4FF0349A75A8CF87A4B197EBD90721`.
+- Auditoria financeira de 24/05 registrou `docs/BUGS_LOGICA_FINANCEIRA_INCONSISTENCIAS_V2_1_1_2026-05-24.md`; principal achado e `FIN-001`, em que Dashboard "Por fluxo de caixa" inclui `checking/credit_card_payment` no filtro/contador, mas ignora os valores nas somas, deixando `R$ 109.911,52` fora dos KPIs na base de teste. `FIN-002` registra lancamentos OFX de valor zero como `income` pendente; `FIN-003` registra `136` descricoes/merchants persistidos com `U+FFFD`.
 - O perfil original do usuário foi restaurado ao final da rodada de 24/05 com `transactions=2659`, `import_runs=2`, `import_run_files=90`, `goals=0`; a base validada pós-upgrade/importação ficou preservada em `B13-v211-upgraded-after-import-data.sqlite`.
 - Retestar em rodada separada a oscilação visual observada no teste de senha se ela reaparecer; não foi tratada como bloqueio da importação.
 - Preservar baseline de upgrade separada da limpeza de `%AppData%\GarlicFinance`; a instalação limpa e o upgrade real não devem compartilhar o mesmo perfil sem snapshot/restauração.
@@ -107,6 +108,7 @@ Ele deve ser suficiente para retomar o trabalho sem abrir o histórico detalhado
 | 23/05/2026 | Bloqueios A12/A20/A21 corrigidos | Pasta base passou a ser persistida/hidratada por contrato dedicado; app release recompilado mostrou setup com pasta base concluída e reimportação criou run #2 processando 45 arquivos |
 | 24/05/2026 | Upgrade MSI B01-B14 validado com ressalva aceita | Rodada humana elevou o gate: `v1.0.0` abriu apenas janela, limitação aceita; `v2.1.1` instalada por cima abriu normal e cobriu Dashboard, Transações, Planejamento, Importação, histórico e senha BTG |
 | 24/05/2026 | Hotfix visual de scroll da shell aplicado | Janela/documento deixa de rolar expondo fundo vazio; workspace mantém scroll interno; `build`, `smoke:e2e:v2`, `tauri:build` e `release:check:v2` passaram |
+| 24/05/2026 | Auditoria de inconsistências financeiras registrada | Backlog `FIN-001` a `FIN-005` criado; principal risco material e Dashboard cashflow ignorar valores de pagamento de fatura nos KPIs |
 
 ## Checklist de Recuperação Rápida
 Uma leitura deste arquivo, do `AGENTS.md`, do roadmap e da matriz de flags deve permitir recuperar:

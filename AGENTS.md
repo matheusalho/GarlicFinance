@@ -110,11 +110,11 @@ Para economizar contexto:
 ## Sessão Atual
 - Data: `24/05/2026`
 - Sprint ativa: `Task 0 — Release Proof And Baseline Integrity`
-- Entrega concluida nesta data: `Validacao humana do upgrade MSI B01-B14 e hotfix visual de scroll da shell`
-- Resultado: commit `ed106fd fix: persist import base path for release validation` publicado em `origin/codex/GPT5.5-01.05.26`; worktree `v1.0.0` gerou MSI `GarlicFinance_1.0.0_x64_en-US.msi`; o usuario executou a trilha elevada/UAC, aceitou a UI vazia da `v1.0.0` como limitacao da baseline antiga, instalou `v2.1.1` por cima e validou app utilizavel com screenshots de Dashboard, Transacoes, Planejamento, Importacao, historico e Seguranca/senha BTG. Depois, o scroll global da shell foi corrigido para impedir fundo vazio abaixo da sidebar/workspace.
-- Melhoria operacional desta sessão: evidencia separa bloqueio automatizado, migracao assistida, validacao humana final e hotfix visual; artefatos do scroll ficam em `output/manual-validation/v2.1.1/2026-05-24-upgrade/layout-scroll-fix/`.
-- Risco aberto principal: acompanhar a oscilacao visual do teste de senha como follow-up de UX/estabilidade; a UI `v1.0.0` vazia nao sera corrigida para repetir teste.
-- Próximo passo único: `Consolidar Go/No-Go final de publicacao da v2.1.1 e decidir tag/release a partir do branch validado.`
+- Entrega concluida nesta data: `Validacao humana do upgrade MSI B01-B14, hotfix visual de scroll da shell e auditoria de inconsistencias financeiras`
+- Resultado: commit `ed106fd fix: persist import base path for release validation` publicado em `origin/codex/GPT5.5-01.05.26`; worktree `v1.0.0` gerou MSI `GarlicFinance_1.0.0_x64_en-US.msi`; o usuario executou a trilha elevada/UAC, aceitou a UI vazia da `v1.0.0` como limitacao da baseline antiga, instalou `v2.1.1` por cima e validou app utilizavel com screenshots de Dashboard, Transacoes, Planejamento, Importacao, historico e Seguranca/senha BTG. Depois, o scroll global da shell foi corrigido para impedir fundo vazio abaixo da sidebar/workspace. Em seguida, a auditoria de logica financeira registrou backlog em `docs/BUGS_LOGICA_FINANCEIRA_INCONSISTENCIAS_V2_1_1_2026-05-24.md`.
+- Melhoria operacional desta sessão: evidencia separa bloqueio automatizado, migracao assistida, validacao humana final, hotfix visual e auditoria financeira; artefatos do scroll ficam em `output/manual-validation/v2.1.1/2026-05-24-upgrade/layout-scroll-fix/`.
+- Risco aberto principal: `FIN-001` indica que a base Dashboard "Por fluxo de caixa" conta pagamentos de fatura, mas nao soma seus valores nos KPIs; corrigir ou aceitar explicitamente antes do Go/No-Go. Tambem acompanhar a oscilacao visual do teste de senha como follow-up de UX/estabilidade.
+- Próximo passo único: `Triar e corrigir FIN-001/FIN-002 com regressao dedicada, ou registrar aceite explicito antes de consolidar Go/No-Go da v2.1.1.`
 
 ## Rotina de Atualização
 No início da sessão:
