@@ -239,4 +239,3 @@ Para a versao `2.1.1`, a superficie efetivamente ativa e:
 4. `services/importer/build_sidecar.py` e scripts de `apps/desktop/scripts/**` para empacotamento, smoke, benchmarks e release check.
 5. `ArquivosFinance/**` apenas como base local de teste/importacao, nao como parte do produto instalado.
 6. `docs/**` como governanca, evidencias e continuidade; nao como runtime do app.
-
