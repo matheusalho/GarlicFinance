@@ -98,6 +98,7 @@ Para economizar contexto:
 | 17/03/2026 | Fechar EPIC RC-Final para `v2.1.1` | Consolidar acabamento premium antes de publicação (encoding, escopo de importação, prevenção de erro de categorização, a11y modal e limpeza de release) | Gate técnico completo + `tauri:build` + `release:check:v2` verdes; MSI `GarlicFinance_2.1.1_x64_en-US.msi` e sidecar validados |
 | 23/05/2026 | Persistir pasta base por contrato dedicado | Evitar divergência entre histórico visível da Central de Importação e estado real usado pelo fluxo de importação | `settings_import_base_path_get/set` passam a hidratar o App no bootstrap e a confirmar o setup antes de reimportar |
 | 24/05/2026 | Aceitar upgrade MSI com limitacao conhecida da UI `v1.0.0` | A `v1.0.0` abriu apenas a janela, mas cumpriu o papel de baseline; a `v2.1.1` instalada por cima abriu normalmente e ficou utilizavel | B01-B14 ficam cobertos por evidencias humanas em `output/manual-validation/v2.1.1/2026-05-24-upgrade/human-B01-msi-upgrade/` |
+| 24/05/2026 | Travar scroll global da shell V2 | Evitar que a janela inteira role e exponha fundo vazio abaixo da sidebar/workspace | `#root` fica fixo no viewport; MSI `2.1.1` recompilado com SHA256 `11E0547FC464D34389CC36C9B1A2AD660D4FF0349A75A8CF87A4B197EBD90721` e `release:check:v2` verde |
 
 ## Checklist Técnico Pré-RC de Remoção do Legacy
 1. Concluído: remover de [App.tsx](C:\Projetos\GarlicFinance\apps\desktop\src\App.tsx) os imports, `lazy()` e branches de runtime ligados a `LegacyDashboardTab`, `LegacyTransactionsTab` e `LegacySettingsTab`.
@@ -109,11 +110,11 @@ Para economizar contexto:
 ## Sessão Atual
 - Data: `24/05/2026`
 - Sprint ativa: `Task 0 — Release Proof And Baseline Integrity`
-- Entrega concluida nesta data: `Checkpoint GitHub do fix A12/A20/A21 e validacao humana do upgrade MSI B01-B14`
-- Resultado: commit `ed106fd fix: persist import base path for release validation` publicado em `origin/codex/GPT5.5-01.05.26`; worktree `v1.0.0` gerou MSI `GarlicFinance_1.0.0_x64_en-US.msi`; rodada automatizada de B01 ficou bloqueada sem elevacao, mas o usuario executou a trilha elevada/UAC, aceitou a UI vazia da `v1.0.0` como limitacao da baseline antiga, instalou `v2.1.1` por cima e validou app utilizavel com screenshots de Dashboard, Transacoes, Planejamento, Importacao, historico e Seguranca/senha BTG.
-- Melhoria operacional desta sessão: a evidencia separa bloqueio automatizado, migracao assistida e validacao humana final; perfil original foi salvo/restaurado e a base validada pos-upgrade/importacao foi preservada como artefato.
+- Entrega concluida nesta data: `Validacao humana do upgrade MSI B01-B14 e hotfix visual de scroll da shell`
+- Resultado: commit `ed106fd fix: persist import base path for release validation` publicado em `origin/codex/GPT5.5-01.05.26`; worktree `v1.0.0` gerou MSI `GarlicFinance_1.0.0_x64_en-US.msi`; o usuario executou a trilha elevada/UAC, aceitou a UI vazia da `v1.0.0` como limitacao da baseline antiga, instalou `v2.1.1` por cima e validou app utilizavel com screenshots de Dashboard, Transacoes, Planejamento, Importacao, historico e Seguranca/senha BTG. Depois, o scroll global da shell foi corrigido para impedir fundo vazio abaixo da sidebar/workspace.
+- Melhoria operacional desta sessão: evidencia separa bloqueio automatizado, migracao assistida, validacao humana final e hotfix visual; artefatos do scroll ficam em `output/manual-validation/v2.1.1/2026-05-24-upgrade/layout-scroll-fix/`.
 - Risco aberto principal: acompanhar a oscilacao visual do teste de senha como follow-up de UX/estabilidade; a UI `v1.0.0` vazia nao sera corrigida para repetir teste.
-- Próximo passo único: `Consolidar Go/No-Go final de publicacao da v2.1.1 e decidir se geramos tag/release a partir do branch validado.`
+- Próximo passo único: `Consolidar Go/No-Go final de publicacao da v2.1.1 e decidir tag/release a partir do branch validado.`
 
 ## Rotina de Atualização
 No início da sessão:

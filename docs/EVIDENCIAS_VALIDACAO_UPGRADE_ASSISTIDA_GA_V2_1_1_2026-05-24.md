@@ -77,5 +77,15 @@
 - A oscilacao visual do teste de senha foi reproduzida na rodada assistida automatizada, mas a aplicacao se recuperou e validou a senha. Na evidencia humana final, a tela de Seguranca mostra `Senha validada com sucesso`.
 - A baseline `v1.0.0` usada na migracao assistida foi controlada/semeada para preservar seguranca operacional; ela valida schema e preservacao de dados, mas nao substitui a trilha fechada de Windows Installer.
 
+## Hotfix Visual Pos-Upgrade - Scroll da Shell
+- Achado: ao rolar a UI fora de tabelas, o documento inteiro podia deslocar a shell e expor um espaco vazio abaixo da sidebar/workspace.
+- Causa raiz: `html/body/#root` nao travavam o viewport e o breakpoint compacto ainda dependia de altura automatica; o overflow interno de `gf-content` podia contribuir para o scroll do documento.
+- Correcao aplicada: `html/body` passaram a ter `height: 100%` e `overflow: hidden`; `#root` passou a ser fixo no viewport; o breakpoint `max-width: 1280px` manteve a rolagem dentro de `.gf-layout` com `height: 100dvh`.
+- Evidencias: `output/manual-validation/v2.1.1/2026-05-24-upgrade/layout-scroll-fix/scroll-lock-after-fix-desktop.png`, `scroll-lock-after-fix-compact-1280.png` e `scroll-lock-after-fix-metrics.json`.
+- Metricas de verificacao: desktop `scrollY=0`, `docScrollHeight=docClientHeight=1030`, `layoutTop=0`, com `.gf-content` ainda rolavel (`contentScrollTop=420`); compacto `1280x800` tambem manteve `scrollY=0` e `layoutTop=0`.
+- Gates executados: `npm --workspace apps/desktop run build`, `npm --workspace apps/desktop run smoke:e2e:v2`, `npm --workspace apps/desktop run tauri:build` e `npm --workspace apps/desktop run release:check:v2`.
+- MSI recompilado com o hotfix: `apps/desktop/src-tauri/target/release/bundle/msi/GarlicFinance_2.1.1_x64_en-US.msi`, SHA256 `11E0547FC464D34389CC36C9B1A2AD660D4FF0349A75A8CF87A4B197EBD90721`.
+- Release check: `output/release/v2-rc-check/2026-05-24T17-27-06-553Z/report.json`, sem falhas, versoes alinhadas e sem chunks `Legacy*.js`.
+
 ## Recomendacao
 Considerar o gate de upgrade B00-B14 coberto com ressalva documentada sobre a UI antiga da `v1.0.0`. A proxima decisao e consolidar Go/No-Go final de publicacao da `v2.1.1`, usando esta evidencia junto das validacoes de instalacao limpa, importacao, categorizacao e planejamento ja registradas.

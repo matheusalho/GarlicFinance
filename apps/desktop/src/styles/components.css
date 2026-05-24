@@ -1486,8 +1486,8 @@
 @media (max-width: 1280px) {
   .gf-layout {
     grid-template-columns: 1fr;
-    height: auto;
-    min-height: 100dvh;
+    height: 100dvh;
+    min-height: 0;
     overflow: auto;
     padding: var(--gf-space-3);
     gap: var(--gf-space-3);
