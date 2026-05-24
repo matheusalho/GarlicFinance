@@ -9,8 +9,8 @@ Ele deve ser suficiente para retomar o trabalho sem abrir o histórico detalhado
 - Ciclo ativo: `V2.1.x (hardening de publicação)`.
 - Estado do roadmap: `Sprint 1 = done`, `Sprint 2 = done`, `Sprint 3 = done`, `Sprint 4 = done`, `Sprint 5 = done`, `Sprint 6 = done`, `Sprint 7 = done`, `Sprint 8 = done`.
 - Sprint atual: `Task 0 — Release Proof And Baseline Integrity`.
-- Última entrega fechada: `Checkpoint GitHub do fix A12/A20/A21 e validação assistida parcial de upgrade B00-B14`.
-- Próximo passo único: `Executar B01 em sessão elevada/UAC para validar o upgrade real por MSI v1.0.0 -> v2.1.1 e repetir B10-B14 pelo executável instalado`.
+- Última entrega fechada: `Checkpoint GitHub do fix A12/A20/A21 e validação humana do upgrade MSI B01-B14`.
+- Próximo passo único: `Consolidar Go/No-Go final de publicação da v2.1.1 e decidir se geramos tag/release a partir do branch validado`.
 - Diretriz obrigatória: `legacy` congelado funcionalmente e sem dependência de runtime na trilha V2 publicada.
 
 ## O que Já Está Consolidado na V2
@@ -45,6 +45,7 @@ Ele deve ser suficiente para retomar o trabalho sem abrir o histórico detalhado
 - A correção de 23/05 adicionou contrato Tauri dedicado para persistir/hidratar pasta base (`settings_import_base_path_get/set`), recompilou o MSI `2.1.1` e validou nova execução no banco (`import_runs=2`, `import_run_files=90`, run #2 `noop` por ausência de novos lançamentos).
 - Em 24/05, o fix foi publicado em `origin/codex/GPT5.5-01.05.26` no commit `ed106fd`; a rodada B00-B14 ficou parcialmente coberta em `output/manual-validation/v2.1.1/2026-05-24-upgrade/`, com B01 bloqueado por `Error 1730` sem elevação administrativa.
 - A validação assistida de 24/05 comprovou migração de dados com o executável release recompilado: schema `5 -> 7`, preservação de transações/meta/orçamento/regra, hidratação da pasta base, senha BTG validada após oscilação visual e importação incremental com `45` arquivos, `2658` novas, `4` deduplicadas e `0` avisos.
+- O complemento humano de 24/05 cobriu B01-B14 por MSI real em `human-B01-msi-upgrade/`: a `v1.0.0` abriu apenas a janela, sem renderizar a UI antiga, mas a limitação foi aceita; a `v2.1.1` instalada por cima abriu normalmente e os screenshots cobrem Dashboard, Transações, Planejamento, Importação, histórico e Segurança/senha validada.
 - O perfil original do usuário foi restaurado ao final da rodada de 24/05 com `transactions=2659`, `import_runs=2`, `import_run_files=90`, `goals=0`; a base validada pós-upgrade/importação ficou preservada em `B13-v211-upgraded-after-import-data.sqlite`.
 - Retestar em rodada separada a oscilação visual observada no teste de senha se ela reaparecer; não foi tratada como bloqueio da importação.
 - Preservar baseline de upgrade separada da limpeza de `%AppData%\GarlicFinance`; a instalação limpa e o upgrade real não devem compartilhar o mesmo perfil sem snapshot/restauração.
@@ -103,7 +104,7 @@ Ele deve ser suficiente para retomar o trabalho sem abrir o histórico detalhado
 | 05/05/2026 | Validação parcial com screenshots executada | MSI instalado, app aberto em instalação limpa, banco novo verificado sem transações/importações, capturas de Dashboard/Transações/Planejamento/Configurações/responsividade salvas; senha/importação/categorização/upgrade ficaram `HUMAN_REQUIRED` |
 | 23/05/2026 | Validação humana assistida com dados de teste executada | Senha BTG validada; categorização individual criou regra; lote atualizou 2 transações; Planejamento criou lançamento extraordinário, recorrência e projeção comparativa; restart e responsividade capturados; bloqueio de pasta base/reimportação identificado |
 | 23/05/2026 | Bloqueios A12/A20/A21 corrigidos | Pasta base passou a ser persistida/hidratada por contrato dedicado; app release recompilado mostrou setup com pasta base concluída e reimportação criou run #2 processando 45 arquivos |
-| 24/05/2026 | Upgrade assistido B00-B14 parcialmente validado | B01 real por MSI ficou bloqueado por falta de elevação administrativa; release recompilado validou migração de schema/dados, senha BTG e importação incremental; perfil original restaurado |
+| 24/05/2026 | Upgrade MSI B01-B14 validado com ressalva aceita | Rodada humana elevou o gate: `v1.0.0` abriu apenas janela, limitação aceita; `v2.1.1` instalada por cima abriu normal e cobriu Dashboard, Transações, Planejamento, Importação, histórico e senha BTG |
 
 ## Checklist de Recuperação Rápida
 Uma leitura deste arquivo, do `AGENTS.md`, do roadmap e da matriz de flags deve permitir recuperar:

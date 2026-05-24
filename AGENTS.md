@@ -97,7 +97,7 @@ Para economizar contexto:
 | 12/03/2026 | Fechar hotfix V2.0.x de natureza de categorias + onboarding modal + revisão atômica | Corrigir distorção contábil de créditos BTG, completar onboarding inicial e eliminar remoção prematura da fila de revisão | Migration `007` aplicada, `expense_adjustment` consolidado, `transactions_apply_decision` integrado, onboarding popup retomável com etapa `categories_setup` e gates técnicos completos verdes |
 | 17/03/2026 | Fechar EPIC RC-Final para `v2.1.1` | Consolidar acabamento premium antes de publicação (encoding, escopo de importação, prevenção de erro de categorização, a11y modal e limpeza de release) | Gate técnico completo + `tauri:build` + `release:check:v2` verdes; MSI `GarlicFinance_2.1.1_x64_en-US.msi` e sidecar validados |
 | 23/05/2026 | Persistir pasta base por contrato dedicado | Evitar divergência entre histórico visível da Central de Importação e estado real usado pelo fluxo de importação | `settings_import_base_path_get/set` passam a hidratar o App no bootstrap e a confirmar o setup antes de reimportar |
-| 24/05/2026 | Separar upgrade de dados assistido do gate real de instalador | A sessao sem elevacao bloqueou a troca real de MSI, mas ainda permitiu validar migracao de schema, preservacao e importacao incremental com o release recompilado | B01 segue pendente por `Error 1730`; B10-B14 foram parcialmente cobertos em `output/manual-validation/v2.1.1/2026-05-24-upgrade/` |
+| 24/05/2026 | Aceitar upgrade MSI com limitacao conhecida da UI `v1.0.0` | A `v1.0.0` abriu apenas a janela, mas cumpriu o papel de baseline; a `v2.1.1` instalada por cima abriu normalmente e ficou utilizavel | B01-B14 ficam cobertos por evidencias humanas em `output/manual-validation/v2.1.1/2026-05-24-upgrade/human-B01-msi-upgrade/` |
 
 ## Checklist Técnico Pré-RC de Remoção do Legacy
 1. Concluído: remover de [App.tsx](C:\Projetos\GarlicFinance\apps\desktop\src\App.tsx) os imports, `lazy()` e branches de runtime ligados a `LegacyDashboardTab`, `LegacyTransactionsTab` e `LegacySettingsTab`.
@@ -109,11 +109,11 @@ Para economizar contexto:
 ## Sessão Atual
 - Data: `24/05/2026`
 - Sprint ativa: `Task 0 — Release Proof And Baseline Integrity`
-- Entrega concluida nesta data: `Checkpoint GitHub do fix A12/A20/A21 e validacao assistida parcial B00-B14`
-- Resultado: commit `ed106fd fix: persist import base path for release validation` publicado em `origin/codex/GPT5.5-01.05.26`; worktree `v1.0.0` gerou MSI `GarlicFinance_1.0.0_x64_en-US.msi`; B01 real via MSI ficou bloqueado por `Error 1730` sem elevacao administrativa; migracao assistida com o executavel release recompilado preservou transacoes/meta/orcamento/regra, elevou schema para `7`, validou senha BTG apos oscilacao visual e executou importacao incremental com `45` arquivos, `2658` inseridas, `4` deduplicadas e `0` avisos.
-- Melhoria operacional desta sessão: perfil original foi salvo antes da rodada, a base validada pos-upgrade/importacao foi preservada como artefato e o perfil do usuario foi restaurado ao final (`transactions=2659`, `import_runs=2`, `import_run_files=90`, `goals=0`).
-- Risco aberto principal: Go/No-Go segue pendente ate execucao elevada do upgrade real por Windows Installer (`v1.0.0 -> v2.1.1` usando o MSI recompilado em `C:\Program Files`); acompanhar a oscilacao visual do teste de senha como follow-up.
-- Próximo passo único: `Executar B01 em sessao elevada/UAC para validar o upgrade real por MSI e repetir B10-B14 pelo executavel instalado.`
+- Entrega concluida nesta data: `Checkpoint GitHub do fix A12/A20/A21 e validacao humana do upgrade MSI B01-B14`
+- Resultado: commit `ed106fd fix: persist import base path for release validation` publicado em `origin/codex/GPT5.5-01.05.26`; worktree `v1.0.0` gerou MSI `GarlicFinance_1.0.0_x64_en-US.msi`; rodada automatizada de B01 ficou bloqueada sem elevacao, mas o usuario executou a trilha elevada/UAC, aceitou a UI vazia da `v1.0.0` como limitacao da baseline antiga, instalou `v2.1.1` por cima e validou app utilizavel com screenshots de Dashboard, Transacoes, Planejamento, Importacao, historico e Seguranca/senha BTG.
+- Melhoria operacional desta sessão: a evidencia separa bloqueio automatizado, migracao assistida e validacao humana final; perfil original foi salvo/restaurado e a base validada pos-upgrade/importacao foi preservada como artefato.
+- Risco aberto principal: acompanhar a oscilacao visual do teste de senha como follow-up de UX/estabilidade; a UI `v1.0.0` vazia nao sera corrigida para repetir teste.
+- Próximo passo único: `Consolidar Go/No-Go final de publicacao da v2.1.1 e decidir se geramos tag/release a partir do branch validado.`
 
 ## Rotina de Atualização
 No início da sessão:

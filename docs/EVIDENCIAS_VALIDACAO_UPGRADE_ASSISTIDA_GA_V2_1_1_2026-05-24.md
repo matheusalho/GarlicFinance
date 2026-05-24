@@ -1,13 +1,13 @@
 # Evidencias de Validacao de Upgrade Assistida GA `v2.1.1` - 2026-05-24
 
 ## Status
-- Escopo executado por Codex: `PARTIAL_ASSISTED_AUTOMATED`
+- Escopo executado: `ASSISTED_AUTOMATED_PLUS_HUMAN_MSI_UPGRADE`
 - Dados financeiros usados: `TEST_DATA_AUTHORIZED_BY_USER`
-- Upgrade real via MSI `v1.0.0 -> v2.1.1`: `BLOCKED_ADMIN_ELEVATION`
+- Upgrade real via MSI `v1.0.0 -> v2.1.1`: `PASS_HUMAN_ACCEPTED_WITH_V1_UI_LIMITATION`
 - Migracao de dados e runtime com executavel release recompilado: `PASS_ASSISTED_RELEASE_EXE`
-- Reimportacao incremental pos-migracao: `PASS_ASSISTED_RELEASE_EXE`
+- Reimportacao incremental pos-migracao: `PASS_HUMAN_MSI_UPGRADE`
 - Perfil original do usuario apos a rodada: `RESTORED`
-- Go/No-Go de publicacao: `PENDING_NO_GO_FOR_INSTALLER_UPGRADE_GATE`
+- Go/No-Go de publicacao: `GO_CANDIDATE_PENDING_FINAL_RELEASE_DECISION`
 
 ## Ambiente
 | Item | Valor |
@@ -21,15 +21,23 @@
 | SHA256 MSI `v2.1.1` | `7D015F9A776F352B2FA97ED7AA7E7439F3800133D4B29CF2D75E68DAB8689F25` |
 | Executavel release recompilado usado na migracao assistida | `C:\Projetos\GarlicFinance\apps\desktop\src-tauri\target\release\garlic-finance-desktop.exe` |
 | Evidencias visuais e tecnicas | `output/manual-validation/v2.1.1/2026-05-24-upgrade/` |
+| Evidencias humanas do upgrade MSI | `output/manual-validation/v2.1.1/2026-05-24-upgrade/human-B01-msi-upgrade/` |
 | Banco local ativo durante a validacao | `%APPDATA%\GarlicFinance\data.sqlite` |
 | Pasta de arquivos financeiros | `C:\Projetos\GarlicFinance\ArquivosFinance` |
 
-## Bloqueio do Upgrade Real via MSI
+## Bloqueio da Rodada Automatizada via MSI
 - O Windows tinha `GarlicFinance 2.1.1` instalado antes da rodada, com `ProductCode={C53C7506-119C-46FE-A0A4-4AAD1E15002B}`.
 - A tentativa de remover a instalacao atual por `msiexec` silencioso falhou com `exitCode=1603`.
 - O log `B00-uninstall-2.1.1.log` mostrou `MSI_LUA: Elevation prompt disabled for silent installs` e `Error 1730. You must be an Administrator to remove this application`.
 - A sessao PowerShell estava sem elevacao administrativa (`IsElevated=False` na verificacao operacional da rodada).
 - Por isso, nao foi possivel executar a etapa B01 no formato fechado de instalador: instalar `v1.0.0` e aplicar o MSI `v2.1.1` por cima em ambiente real de Windows Installer.
+
+## Complemento Humano do Upgrade MSI
+- O usuario executou manualmente o caminho B01 com elevacao/UAC: a `v1.0.0` abriu como janela do aplicativo, mas nao renderizou o conteudo da UI antiga.
+- A UI vazia da `v1.0.0` foi aceita explicitamente como limitacao da baseline antiga e nao sera corrigida apenas para repetir o teste.
+- A instalacao da `v2.1.1` por cima foi concluida e o Windows passou a listar `GarlicFinance 2.1.1` instalado em `24/05/2026`.
+- A abertura posterior da `v2.1.1` exibiu a UI normalmente e o aplicativo ficou utilizavel.
+- As telas B10-B14 foram capturadas em `human-B01-msi-upgrade/`, cobrindo Dashboard pos-upgrade, Transacoes, Planejamento, Configuracoes/Importacao, historico de importacao e Seguranca/senha BTG.
 
 ## Metodo Assistido Executado com Seguranca
 1. O perfil atual foi salvo em `pre-run-backup-current-profile/` e `pre-data-migration-backup-current-profile/`.
@@ -50,24 +58,24 @@
 - Apos a importacao, o banco de validacao tinha `transactions=2662`, `import_runs=1`, `import_run_files=45`, `source_files=46` e `goals=1`.
 - As telas de Transacoes, Planejamento e Configuracoes foram capturadas apos migracao/importacao.
 - O perfil original do usuario foi restaurado ao final com `transactions=2659`, `import_runs=2`, `import_run_files=90`, `goals=0`.
+- As evidencias humanas do MSI mostram `B01-v211-msi-install-success.png`, primeira abertura `B10-v211-first-open-after-msi-upgrade.png`, Transacoes preservadas com pendencias e importacao anterior, Planejamento com meta `Reserva Upgrade`, Importacao com pasta base correta e reimportacao `Sem alteracoes`, historico com duas execucoes em `24/05/2026`, e Seguranca com `Senha validada com sucesso`.
 
 ## Evidencias por Etapa
 | ID | Status Codex | Evidencia |
 |---|---|---|
 | B00 | `PASS_ASSISTED_BASELINE_SEEDED` | `B00-v1-baseline-counts.txt`, `B00-v1-baseline-data.sqlite`, `B00-v1-first-open-before-seed.png`, `B00-v1-baseline-open-after-seed.png` |
-| B01 | `BLOCKED_ADMIN_ELEVATION` | `B00-installed-before-uninstall.json`, `B00-uninstall-2.1.1.log`; falha `1603` por `Error 1730` sem elevacao administrativa |
-| B10 | `PASS_ASSISTED_RELEASE_EXE` | `B10-v211-rebuilt-release-open-after-v1-db-migration.png`, `B10-rebuilt-release-post-launch-counts.txt`; `B10-v211-open-after-v1-db-migration.png` registra apenas o instalador local stale/pre-fix |
-| B11 | `PASS_SCREENSHOT` | `B11-transactions-after-upgrade-import.png`; transacoes preservadas e base de teste importada visiveis |
-| B12 | `PASS_SCREENSHOT` | `B12-planning-after-upgrade-import.png`; Planejamento abriu apos migracao/importacao |
-| B13 | `PASS_ASSISTED_RELEASE_EXE` | `B13-incremental-import-main-button-after-wait.png`, `B13-incremental-import-final-state.png`, `B13-import-poll.log`, `B13-import-runs-final.txt`, `B13-post-final-import-counts.txt` |
-| B14 | `PASS_WITH_VISUAL_OSCILLATION` | `B14-password-test-rebuilt-release-after-click.png`, `B13-incremental-import-rebuilt-release-after-wait.png`, `B14-settings-after-password-validation.png`; senha validada, com oscilacao visual temporaria antes da recuperacao |
+| B01 | `PASS_HUMAN_ACCEPTED_WITH_V1_UI_LIMITATION` | Rodada automatizada bloqueada em `B00-uninstall-2.1.1.log`; rodada humana aceita com `B01-v211-msi-install-success.png`. A janela `v1.0.0` abriu, mas a UI antiga nao renderizou; limitacao aceita pelo usuario. |
+| B10 | `PASS_HUMAN_SCREENSHOT` | `human-B01-msi-upgrade/B10-v211-first-open-after-msi-upgrade.png`; Dashboard `v2.1.1` carregado, setup `2/4 concluidos`, pasta base e senha concluidas |
+| B11 | `PASS_HUMAN_SCREENSHOT` | `human-B01-msi-upgrade/B11-v211-transactions-preserved.png`; Transacoes visiveis, `82` pendencias e status `45 arquivo(s), 2658 novas, 4 deduplicadas` |
+| B12 | `PASS_HUMAN_SCREENSHOT` | `human-B01-msi-upgrade/B12-v211-planning-preserved.png`; Planejamento abriu e preservou meta `Reserva Upgrade` |
+| B13 | `PASS_HUMAN_SCREENSHOT` | `human-B01-msi-upgrade/B13-v211-import-settings-before-import.png`, `B13-v211-import-running-or-finished.png`, `B13-v211-import-history-after-import.png`; reimportacao final `Sem alteracoes`, esperado para arquivos ja importados |
+| B14 | `PASS_HUMAN_SCREENSHOT` | `human-B01-msi-upgrade/B14-v211-security-password-before-test.png`, `B14-v211-security-password-validated.png`; senha BTG validada com sucesso |
 | Cleanup | `PASS_RESTORED_PROFILE` | `B13-v211-upgraded-after-import-data.sqlite`, `B99-restored-original-profile-counts.txt` |
 
 ## Riscos e Bugs Suspeitos
-- O gate de upgrade por instalador continua aberto: a validacao B01 exige sessao elevada ou interacao UAC para instalar `v1.0.0` e aplicar o MSI `v2.1.1` recompilado por cima.
-- O executavel instalado em `C:\Program Files\GarlicFinance 2.1.1\` ainda refletia uma build stale/pre-fix nesta maquina, porque a reinstalacao do MSI recompilado tambem depende de elevacao.
-- A oscilacao visual do teste de senha foi reproduzida, mas a aplicacao se recuperou e validou a senha. Deve ser acompanhada como follow-up de UX/estabilidade, nao como bloqueio funcional nesta rodada.
+- A UI da `v1.0.0` nao renderizou conteudo antes do upgrade, mas a janela do app abriu e a baseline cumpriu o papel de origem do upgrade; o usuario aceitou explicitamente nao corrigir a UI antiga apenas para refazer o teste.
+- A oscilacao visual do teste de senha foi reproduzida na rodada assistida automatizada, mas a aplicacao se recuperou e validou a senha. Na evidencia humana final, a tela de Seguranca mostra `Senha validada com sucesso`.
 - A baseline `v1.0.0` usada na migracao assistida foi controlada/semeada para preservar seguranca operacional; ela valida schema e preservacao de dados, mas nao substitui a trilha fechada de Windows Installer.
 
 ## Recomendacao
-Manter o Go/No-Go como pendente para publicacao ate executar B01 em uma sessao elevada. A proxima rodada deve instalar ou restaurar uma baseline real `v1.0.0`, aplicar o MSI `v2.1.1` recompilado por cima, abrir pelo executavel instalado em `C:\Program Files\GarlicFinance 2.1.1\` e repetir B10-B14 sem usar o executavel release direto do repositorio.
+Considerar o gate de upgrade B00-B14 coberto com ressalva documentada sobre a UI antiga da `v1.0.0`. A proxima decisao e consolidar Go/No-Go final de publicacao da `v2.1.1`, usando esta evidencia junto das validacoes de instalacao limpa, importacao, categorizacao e planejamento ja registradas.
