@@ -9,8 +9,8 @@ Ele deve ser suficiente para retomar o trabalho sem abrir o histórico detalhado
 - Ciclo ativo: `V2.1.x (hardening de publicação)`.
 - Estado do roadmap: `Sprint 1 = done`, `Sprint 2 = done`, `Sprint 3 = done`, `Sprint 4 = done`, `Sprint 5 = done`, `Sprint 6 = done`, `Sprint 7 = done`, `Sprint 8 = done`.
 - Sprint atual: `Task 0 — Release Proof And Baseline Integrity`.
-- Última entrega fechada: `Validação humana do upgrade MSI B01-B14, hotfix visual de scroll da shell e auditoria de inconsistências financeiras`.
-- Próximo passo único: `Triar e corrigir FIN-001/FIN-002 com regressão dedicada, ou registrar aceite explícito antes de consolidar Go/No-Go da v2.1.1`.
+- Última entrega fechada: `Hotfix UI/versionamento 2.1.2 sobre a validação humana do upgrade MSI B01-B14`.
+- Próximo passo único: `Triar e corrigir FIN-001/FIN-002 com regressão dedicada, ou registrar aceite explícito antes de consolidar Go/No-Go da v2.1.2`.
 - Diretriz obrigatória: `legacy` congelado funcionalmente e sem dependência de runtime na trilha V2 publicada.
 
 ## O que Já Está Consolidado na V2
@@ -37,7 +37,7 @@ Ele deve ser suficiente para retomar o trabalho sem abrir o histórico detalhado
 - EPIC RC-Final V2.1.1 (17/03): hardening de encoding (Rust + Python), preflight único por escopo efetivo de importação, categorização flow-aware em Transações/Planejamento, a11y de modal onboarding (focus trap + Esc + restore foco), limpeza visual/textual e release check com versão esperada configurável.
 
 ## Riscos Abertos
-- A próxima fronteira funcional da V2 está na validação humana final em cenário de usuário novo e upgrade real, fora do ambiente de automação; o roteiro e o scaffold de evidência já estão alinhados ao MSI `2.1.1`.
+- A próxima fronteira funcional da V2 está na validação humana final em cenário de usuário novo e upgrade real, fora do ambiente de automação; o roteiro e o scaffold de evidência precisam ser reinterpretados contra o MSI atual `2.1.2`.
 - Fechar decisão de Go/No-Go para GA com evidência operacional da execução em máquina alvo de distribuição.
 - A limpeza local de 05/05 removeu `%APPDATA%\GarlicFinance`, `%LOCALAPPDATA%\com.garlicfinance.desktop`, `%LOCALAPPDATA%\GarlicFinance` e a credencial `GarlicFinance:btg`; após instalar o MSI, validar primeira abertura sem transações importadas.
 - A validação parcial de 05/05 instalou o MSI, abriu o app instalado e salvou screenshots em `output/manual-validation/v2.1.1/2026-05-05/`; o banco novo ficou sem transações/importações, mas a credencial Windows `GarlicFinance:btg` reapareceu e exige validação humana consciente.
@@ -50,6 +50,7 @@ Ele deve ser suficiente para retomar o trabalho sem abrir o histórico detalhado
 - Auditoria financeira de 24/05 registrou `docs/BUGS_LOGICA_FINANCEIRA_INCONSISTENCIAS_V2_1_1_2026-05-24.md`; principal achado e `FIN-001`, em que Dashboard "Por fluxo de caixa" inclui `checking/credit_card_payment` no filtro/contador, mas ignora os valores nas somas, deixando `R$ 109.911,52` fora dos KPIs na base de teste. `FIN-002` registra lancamentos OFX de valor zero como `income` pendente; `FIN-003` registra `136` descricoes/merchants persistidos com `U+FFFD`.
 - Inventario de arquivos utilizados na versao `2.1.1` registrado em `docs/INVENTARIO_ARQUIVOS_UTILIZADOS_V2_1_1_2026-05-24.md`, separando runtime/instalador, build/release, testes, governanca, dados de importacao e candidatos a limpeza.
 - O perfil original do usuário foi restaurado ao final da rodada de 24/05 com `transactions=2659`, `import_runs=2`, `import_run_files=90`, `goals=0`; a base validada pós-upgrade/importação ficou preservada em `B13-v211-upgraded-after-import-data.sqlite`.
+- Hotfix UI/versionamento de 24/05 promoveu a trilha para `2.1.2`: corrigiu modal de onboarding automatico, compactacao da sidebar em `1280px`, respiro do status/footer, contraste de pendencias e titulo HTML; evidencias em `docs/EVIDENCIAS_UI_POLISH_VERSIONAMENTO_V2_1_2_2026-05-24.md` e `output/manual-validation/v2.1.2/2026-05-24-ui-polish/`; MSI `GarlicFinance_2.1.2_x64_en-US.msi` gerado com SHA256 `33614A3E2EAA22AD0CE8FBC91F1A3ABDCAA32C6349BF58BC628878D5D61E1377`.
 - Retestar em rodada separada a oscilação visual observada no teste de senha se ela reaparecer; não foi tratada como bloqueio da importação.
 - Preservar baseline de upgrade separada da limpeza de `%AppData%\GarlicFinance`; a instalação limpa e o upgrade real não devem compartilhar o mesmo perfil sem snapshot/restauração.
 - O repositório continua com trilha de trabalho acumulada de sprints anteriores; não houve limpeza dessa trilha nesta sessão.
@@ -68,6 +69,7 @@ Ele deve ser suficiente para retomar o trabalho sem abrir o histórico detalhado
 - Evidência de build/limpeza local 2.1.1: `docs/EVIDENCIAS_BUILD_INSTALADOR_E_LIMPEZA_LOCAL_V2_1_1_2026-05-05.md`
 - Evidência parcial de validação humana 2.1.1: `docs/EVIDENCIAS_VALIDACAO_HUMANA_PARCIAL_GA_V2_1_1_2026-05-05.md`
 - Evidência assistida de validação humana 2.1.1: `docs/EVIDENCIAS_VALIDACAO_HUMANA_ASSISTIDA_GA_V2_1_1_2026-05-23.md`
+- Evidência UI/versionamento 2.1.2: `docs/EVIDENCIAS_UI_POLISH_VERSIONAMENTO_V2_1_2_2026-05-24.md`
 - Plano mestre V2.2+: `docs/superpowers/plans/2026-05-01-best-personal-finance-app-roadmap.md`
 - Roteiro manual fechado GA: `docs/ROTEIRO_TESTE_MANUAL_FECHADO_GA_V2_0_0.md`
 - Evidências anteriores: `docs/EVIDENCIAS_SPRINT*_V2_0_*.md`
@@ -111,6 +113,7 @@ Ele deve ser suficiente para retomar o trabalho sem abrir o histórico detalhado
 | 24/05/2026 | Hotfix visual de scroll da shell aplicado | Janela/documento deixa de rolar expondo fundo vazio; workspace mantém scroll interno; `build`, `smoke:e2e:v2`, `tauri:build` e `release:check:v2` passaram |
 | 24/05/2026 | Auditoria de inconsistências financeiras registrada | Backlog `FIN-001` a `FIN-005` criado; principal risco material e Dashboard cashflow ignorar valores de pagamento de fatura nos KPIs |
 | 24/05/2026 | Inventário de arquivos utilizados documentado | Relação de arquivos ativos por runtime, build, teste, documentação, dados de importação e candidatos a limpeza registrada |
+| 24/05/2026 | Hotfix UI/versionamento 2.1.2 fechado | Findings visuais corrigidas, teste de regressao adicionado, Browser QA capturado, gates completos passaram e MSI `GarlicFinance_2.1.2_x64_en-US.msi` foi validado pelo `release:check:v2` |
 
 ## Checklist de Recuperação Rápida
 Uma leitura deste arquivo, do `AGENTS.md`, do roadmap e da matriz de flags deve permitir recuperar:

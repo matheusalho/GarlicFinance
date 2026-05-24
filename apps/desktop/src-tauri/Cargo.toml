@@ -1,6 +1,6 @@
 [package]
 name = "garlic-finance-desktop"
-version = "2.1.1"
+version = "2.1.2"
 description = "GarlicFinance desktop app"
 edition = "2021"
 authors = ["GarlicFinance"]

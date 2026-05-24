@@ -299,7 +299,7 @@ function App() {
   const [activeTab, setActiveTab] = useState<TabId>('dashboard')
   const [planningSectionHint, setPlanningSectionHint] = useState<PlanningSectionHint | undefined>(undefined)
   const [settingsSectionHint, setSettingsSectionHint] = useState<SettingsSectionHint | undefined>(undefined)
-  const [showOnboarding, setShowOnboarding] = useState(true)
+  const [showOnboarding, setShowOnboarding] = useState(false)
   const [showFirstUseWizard, setShowFirstUseWizard] = useState(true)
   const [activeFirstUseWizardStep, setActiveFirstUseWizardStep] = useState<SetupStepId>('base_path')
   const [firstUseBasePathConfirmed, setFirstUseBasePathConfirmed] = useState(false)
@@ -2904,7 +2904,7 @@ function App() {
                   </button>
                 )}
               </div>
-              <p className="gf-muted">Pendências: {uncategorizedCount}</p>
+              <p className="gf-sidebar-pending">Pendências: {uncategorizedCount}</p>
             </div>
           </>
         }

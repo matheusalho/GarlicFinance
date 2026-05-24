@@ -24,7 +24,7 @@ Para economizar contexto:
 2. Melhorar performance percebida e responsividade em bases reais.
 3. Tornar a importação resiliente, observável e recuperável.
 4. Preservar a lógica financeira de domínio e evitar distorções contábeis.
-5. Publicar a `v2.1.1` sem dependência funcional visível de `legacy`.
+5. Publicar a `v2.1.2` sem dependência funcional visível de `legacy`.
 
 ## Guardrails Técnicos
 - Não alterar lógica financeira de domínio sem teste de regressão dedicado.
@@ -99,6 +99,7 @@ Para economizar contexto:
 | 23/05/2026 | Persistir pasta base por contrato dedicado | Evitar divergência entre histórico visível da Central de Importação e estado real usado pelo fluxo de importação | `settings_import_base_path_get/set` passam a hidratar o App no bootstrap e a confirmar o setup antes de reimportar |
 | 24/05/2026 | Aceitar upgrade MSI com limitacao conhecida da UI `v1.0.0` | A `v1.0.0` abriu apenas a janela, mas cumpriu o papel de baseline; a `v2.1.1` instalada por cima abriu normalmente e ficou utilizavel | B01-B14 ficam cobertos por evidencias humanas em `output/manual-validation/v2.1.1/2026-05-24-upgrade/human-B01-msi-upgrade/` |
 | 24/05/2026 | Travar scroll global da shell V2 | Evitar que a janela inteira role e exponha fundo vazio abaixo da sidebar/workspace | `#root` fica fixo no viewport; MSI `2.1.1` recompilado com SHA256 `11E0547FC464D34389CC36C9B1A2AD660D4FF0349A75A8CF87A4B197EBD90721` e `release:check:v2` verde |
+| 24/05/2026 | Promover hotfix visual para `v2.1.2` | Fechar findings de modal automatico, status/footer, breakpoint compacto, contraste e titulo antes de nova validacao | Manifests alinhados em `2.1.2`; MSI `GarlicFinance_2.1.2_x64_en-US.msi` gerado com SHA256 `33614A3E2EAA22AD0CE8FBC91F1A3ABDCAA32C6349BF58BC628878D5D61E1377`; `release:check:v2` verde |
 
 ## Checklist Técnico Pré-RC de Remoção do Legacy
 1. Concluído: remover de [App.tsx](C:\Projetos\GarlicFinance\apps\desktop\src\App.tsx) os imports, `lazy()` e branches de runtime ligados a `LegacyDashboardTab`, `LegacyTransactionsTab` e `LegacySettingsTab`.
@@ -110,11 +111,11 @@ Para economizar contexto:
 ## Sessão Atual
 - Data: `24/05/2026`
 - Sprint ativa: `Task 0 — Release Proof And Baseline Integrity`
-- Entrega concluida nesta data: `Validacao humana do upgrade MSI B01-B14, hotfix visual de scroll da shell, auditoria financeira e inventario de arquivos utilizados`
-- Resultado: commit `ed106fd fix: persist import base path for release validation` publicado em `origin/codex/GPT5.5-01.05.26`; worktree `v1.0.0` gerou MSI `GarlicFinance_1.0.0_x64_en-US.msi`; o usuario executou a trilha elevada/UAC, aceitou a UI vazia da `v1.0.0` como limitacao da baseline antiga, instalou `v2.1.1` por cima e validou app utilizavel com screenshots de Dashboard, Transacoes, Planejamento, Importacao, historico e Seguranca/senha BTG. Depois, o scroll global da shell foi corrigido para impedir fundo vazio abaixo da sidebar/workspace. Em seguida, a auditoria de logica financeira registrou backlog em `docs/BUGS_LOGICA_FINANCEIRA_INCONSISTENCIAS_V2_1_1_2026-05-24.md` e o inventario de arquivos utilizados foi documentado em `docs/INVENTARIO_ARQUIVOS_UTILIZADOS_V2_1_1_2026-05-24.md`.
-- Melhoria operacional desta sessão: evidencia separa bloqueio automatizado, migracao assistida, validacao humana final, hotfix visual, auditoria financeira e inventario de arquivos ativos; artefatos do scroll ficam em `output/manual-validation/v2.1.1/2026-05-24-upgrade/layout-scroll-fix/`.
+- Entrega concluida nesta data: `Validacao humana do upgrade MSI B01-B14, hotfix visual de scroll da shell, auditoria financeira, inventario de arquivos utilizados e hotfix UI/versionamento 2.1.2`
+- Resultado: commit `ed106fd fix: persist import base path for release validation` publicado em `origin/codex/GPT5.5-01.05.26`; worktree `v1.0.0` gerou MSI `GarlicFinance_1.0.0_x64_en-US.msi`; o usuario executou a trilha elevada/UAC, aceitou a UI vazia da `v1.0.0` como limitacao da baseline antiga, instalou `v2.1.1` por cima e validou app utilizavel. Depois, o scroll global da shell foi corrigido, a auditoria financeira registrou backlog em `docs/BUGS_LOGICA_FINANCEIRA_INCONSISTENCIAS_V2_1_1_2026-05-24.md`, o inventario foi documentado e as findings visuais remanescentes foram corrigidas em `v2.1.2`: modal de onboarding deixa de abrir automaticamente, sidebar compacta foi reorganizada, status/footer ganhou respiro, contraste de pendencias melhorou e o titulo HTML passou a `GarlicFinance`.
+- Melhoria operacional desta sessão: evidencia separa bloqueio automatizado, migracao assistida, validacao humana final, hotfix visual, auditoria financeira, inventario de arquivos ativos e hotfix UI `2.1.2`; artefatos novos ficam em `docs/EVIDENCIAS_UI_POLISH_VERSIONAMENTO_V2_1_2_2026-05-24.md`, `output/manual-validation/v2.1.2/2026-05-24-ui-polish/` e `output/release/v2-rc-check/2026-05-24T21-46-50-516Z/report.json`.
 - Risco aberto principal: `FIN-001` indica que a base Dashboard "Por fluxo de caixa" conta pagamentos de fatura, mas nao soma seus valores nos KPIs; corrigir ou aceitar explicitamente antes do Go/No-Go. Tambem acompanhar a oscilacao visual do teste de senha como follow-up de UX/estabilidade.
-- Próximo passo único: `Triar e corrigir FIN-001/FIN-002 com regressao dedicada, ou registrar aceite explicito antes de consolidar Go/No-Go da v2.1.1.`
+- Próximo passo único: `Triar e corrigir FIN-001/FIN-002 com regressao dedicada, ou registrar aceite explicito antes de consolidar Go/No-Go da v2.1.2.`
 
 ## Rotina de Atualização
 No início da sessão:
