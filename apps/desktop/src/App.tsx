@@ -1381,8 +1381,9 @@ function App() {
       const startedAt = nowMs()
       let status: 'ok' | 'error' = 'ok'
       try {
-        const [autoImport, preferences, flags, onboarding, passwordStatus] = await Promise.all([
+        const [autoImport, importBasePath, preferences, flags, onboarding, passwordStatus] = await Promise.all([
           commands.settingsAutoImportGet(),
+          commands.settingsImportBasePathGet(),
           commands.settingsUiPreferencesGet(),
           commands.settingsFeatureFlagsGet(),
           commands.settingsOnboardingGet(),
@@ -1390,6 +1391,11 @@ function App() {
         ])
         if (cancelled) return
         setAutoImportEnabled(autoImport.enabled)
+        const normalizedImportBasePath = importBasePath.basePath.trim()
+        if (normalizedImportBasePath) {
+          setBasePath(normalizedImportBasePath)
+          setFirstUseBasePathConfirmed(true)
+        }
         setUiPreferences(preferences.preferences)
         setFeatureFlags(normalizeFeatureFlags(flags.flags))
         setOnboardingState(onboarding)
@@ -1537,6 +1543,11 @@ function App() {
         await new Promise((resolve) => window.setTimeout(resolve, 0))
 
         const preflight = await commands.importPreflight(normalizedBasePath, reprocess, failedOnly, scope)
+        const savedBasePath = await commands.settingsImportBasePathSet(normalizedBasePath)
+        if (savedBasePath.basePath) {
+          setBasePath(savedBasePath.basePath)
+          setFirstUseBasePathConfirmed(true)
+        }
         if (preflight.requiresBtgPassword) {
           const passwordStatus = await commands.settingsPasswordStatus()
           setBtgPasswordConfigured(passwordStatus.exists)
@@ -1849,15 +1860,23 @@ function App() {
     }
   }, [basePath, withBlockingTask])
 
-  const handleConfirmFirstUseBasePath = useCallback(() => {
-    if (!basePath.trim()) {
+  const handleConfirmFirstUseBasePath = useCallback(async (): Promise<boolean> => {
+    const normalizedBasePath = basePath.trim()
+    if (!normalizedBasePath) {
       setStatusMessage('Informe a pasta base antes de continuar.')
       return false
     }
 
-    setFirstUseBasePathConfirmed(true)
-    setStatusMessage('Pasta base confirmada. Próximo passo: salvar a senha BTG.')
-    return true
+    try {
+      const savedBasePath = await commands.settingsImportBasePathSet(normalizedBasePath)
+      setBasePath(savedBasePath.basePath)
+      setFirstUseBasePathConfirmed(true)
+      setStatusMessage('Pasta base confirmada. Próximo passo: salvar a senha BTG.')
+      return true
+    } catch (error) {
+      setStatusMessage(`Falha ao salvar pasta base: ${String(error)}`)
+      return false
+    }
   }, [basePath])
 
   const handleFirstUseBasePathChange = useCallback(
@@ -1872,14 +1891,16 @@ function App() {
     try {
       const selectedPath = await commands.settingsPickImportBasePath(basePath.trim() || undefined)
       if (!selectedPath) return null
-      handleFirstUseBasePathChange(selectedPath)
+      const savedBasePath = await commands.settingsImportBasePathSet(selectedPath)
+      setBasePath(savedBasePath.basePath)
+      setFirstUseBasePathConfirmed(Boolean(savedBasePath.basePath))
       setStatusMessage('Pasta base selecionada com sucesso.')
-      return selectedPath
+      return savedBasePath.basePath || null
     } catch (error) {
       setStatusMessage(`Falha ao selecionar pasta base: ${String(error)}`)
       return null
     }
-  }, [basePath, handleFirstUseBasePathChange])
+  }, [basePath])
 
   const handleFirstUseWizardActiveStepChange = useCallback(
     (stepId: SetupStepId) => {

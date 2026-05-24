@@ -95,6 +95,17 @@ describe('tauri commands browser mock - import center history', () => {
     setBrowserMockWindow()
   })
 
+  it('persists and reloads the import base path independently of import runs', async () => {
+    expect(await commands.settingsImportBasePathGet()).toEqual({ basePath: '' })
+
+    const saved = await commands.settingsImportBasePathSet('C:\\Projetos\\GarlicFinance\\ArquivosFinance')
+
+    expect(saved).toEqual({ basePath: 'C:\\Projetos\\GarlicFinance\\ArquivosFinance' })
+    expect(await commands.settingsImportBasePathGet()).toEqual({
+      basePath: 'C:\\Projetos\\GarlicFinance\\ArquivosFinance',
+    })
+  })
+
   it('tracks noop import runs and lists import history in browser mode', async () => {
     const run = await commands.importRun('C:\\ArquivosFinance', true, true, {
       sourceTypes: ['btg_card_encrypted_xlsx'],

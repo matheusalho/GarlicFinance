@@ -50,6 +50,7 @@ const MOCK_BTG_PASSWORD_KEY = 'garlic.mock.btg-password'
 const MOCK_IMPORT_RUNS_KEY = 'garlic.mock.import-runs-v2'
 const MOCK_IMPORT_RUN_FILES_KEY = 'garlic.mock.import-run-files-v2'
 const MOCK_IMPORT_JOBS_KEY = 'garlic.mock.import-jobs-v2'
+const MOCK_IMPORT_BASE_PATH_KEY = 'garlic.mock.import-base-path-v1'
 
 const defaultUiPreferences = (): UiPreferencesV1 => ({
   theme: 'light',
@@ -1348,6 +1349,16 @@ const browserMock = async <T>(
       const currentPath = String(args.currentPath ?? '').trim()
       return (currentPath || null) as T
     }
+    case 'settings_import_base_path_get': {
+      const basePath = window.localStorage.getItem(MOCK_IMPORT_BASE_PATH_KEY)?.trim() ?? ''
+      return { basePath } as T
+    }
+    case 'settings_import_base_path_set': {
+      const basePath = String((args.input as { basePath?: string } | undefined)?.basePath ?? '').trim()
+      if (basePath) window.localStorage.setItem(MOCK_IMPORT_BASE_PATH_KEY, basePath)
+      else window.localStorage.removeItem(MOCK_IMPORT_BASE_PATH_KEY)
+      return { basePath } as T
+    }
     case 'transactions_list':
       {
         const filters = readBrowserTransactionFilters(args.filters)
@@ -2562,6 +2573,16 @@ export const commands = {
   async settingsPickImportBasePath(currentPath?: string): Promise<string | null> {
     const invoke = await getInvoke()
     return invoke<string | null>('settings_pick_import_base_path', { currentPath })
+  },
+  async settingsImportBasePathGet(): Promise<{ basePath: string }> {
+    const invoke = await getInvoke()
+    return invoke<{ basePath: string }>('settings_import_base_path_get')
+  },
+  async settingsImportBasePathSet(basePath: string): Promise<{ basePath: string }> {
+    const invoke = await getInvoke()
+    return invoke<{ basePath: string }>('settings_import_base_path_set', {
+      input: { basePath },
+    })
   },
   async settingsAutoImportSet(enabled: boolean): Promise<{ enabled: boolean }> {
     const invoke = await getInvoke()

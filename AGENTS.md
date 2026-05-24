@@ -96,6 +96,7 @@ Para economizar contexto:
 | 11/03/2026 | Avançar Sprint 8.3 com polimento final e alinhamento de release `2.0.0` | Fechar acabamento técnico pré-GA e reduzir risco de publicação com versão inconsistente | Navegação lateral ficou em ordem operacional, textos críticos foram polidos, manifests migraram para `2.0.0` e o `release:check:v2` passou a validar consistência de versão e nome do MSI |
 | 12/03/2026 | Fechar hotfix V2.0.x de natureza de categorias + onboarding modal + revisão atômica | Corrigir distorção contábil de créditos BTG, completar onboarding inicial e eliminar remoção prematura da fila de revisão | Migration `007` aplicada, `expense_adjustment` consolidado, `transactions_apply_decision` integrado, onboarding popup retomável com etapa `categories_setup` e gates técnicos completos verdes |
 | 17/03/2026 | Fechar EPIC RC-Final para `v2.1.1` | Consolidar acabamento premium antes de publicação (encoding, escopo de importação, prevenção de erro de categorização, a11y modal e limpeza de release) | Gate técnico completo + `tauri:build` + `release:check:v2` verdes; MSI `GarlicFinance_2.1.1_x64_en-US.msi` e sidecar validados |
+| 23/05/2026 | Persistir pasta base por contrato dedicado | Evitar divergência entre histórico visível da Central de Importação e estado real usado pelo fluxo de importação | `settings_import_base_path_get/set` passam a hidratar o App no bootstrap e a confirmar o setup antes de reimportar |
 
 ## Checklist Técnico Pré-RC de Remoção do Legacy
 1. Concluído: remover de [App.tsx](C:\Projetos\GarlicFinance\apps\desktop\src\App.tsx) os imports, `lazy()` e branches de runtime ligados a `LegacyDashboardTab`, `LegacyTransactionsTab` e `LegacySettingsTab`.
@@ -105,13 +106,13 @@ Para economizar contexto:
 5. Concluído: instalador RC revalidado com `tauri:build` + checagem de artefatos (`release:check:v2`) em fluxo V2-only.
 
 ## Sessão Atual
-- Data: `05/05/2026`
+- Data: `23/05/2026`
 - Sprint ativa: `Task 0 — Release Proof And Baseline Integrity`
-- Entrega concluida nesta data: `Build do instalador 2.1.1 e limpeza local para instalacao limpa`
-- Resultado: `npm --workspace apps/desktop run tauri:build` regenerou o MSI `apps/desktop/src-tauri/target/release/bundle/msi/GarlicFinance_2.1.1_x64_en-US.msi`; `release:check:v2` passou com relatorio em `output/release/v2-rc-check/2026-05-05T13-25-43-076Z/report.json`; `%APPDATA%\GarlicFinance`, `%LOCALAPPDATA%\com.garlicfinance.desktop`, `%LOCALAPPDATA%\GarlicFinance` e a credencial Windows `GarlicFinance:btg` foram removidos para primeira instalacao sem dados anteriores.
-- Melhoria operacional desta sessão: evidencias separadas em `docs/EVIDENCIAS_BUILD_INSTALADOR_E_LIMPEZA_LOCAL_V2_1_1_2026-05-05.md`, mantendo claro que build/limpeza local passaram, mas instalacao e primeira abertura ainda nao foram executadas.
-- Risco aberto principal: validacao humana de primeira abertura ainda pendente; apos instalar o MSI, confirmar que o app inicia sem transacoes importadas e apresenta o fluxo inicial/onboarding.
-- Próximo passo único: `Instalar o MSI GarlicFinance_2.1.1_x64_en-US.msi recem-gerado, abrir o app e validar que a experiencia inicia limpa, sem dados historicos importados.`
+- Entrega concluida nesta data: `Validacao humana assistida e correcao dos bloqueios A12/A20/A21`
+- Resultado: app instalado `2.1.1` aberto pelo executavel; screenshots salvos em `output/manual-validation/v2.1.1/2026-05-23/`; senha BTG validada; categorizacao individual criou regra; categorizacao em lote atualizou 2 transacoes; Planejamento criou lancamento extraordinario, recorrencia e comparativo de cenarios; restart e responsividade `1280x800` capturados. Depois, a persistencia da pasta base foi corrigida, o MSI `GarlicFinance_2.1.1_x64_en-US.msi` foi recompilado, e a revalidacao em `output/manual-validation/v2.1.1/2026-05-23-fix/` mostrou `Definir pasta base` concluido e nova execucao de importacao registrada (`import_runs=2`, `import_run_files=90`).
+- Melhoria operacional desta sessão: uso de UI Automation para acionar e validar telas do app instalado, seguido de contrato Tauri dedicado para salvar/carregar a pasta base de importacao.
+- Risco aberto principal: Go/No-Go segue pendente ate execucao do upgrade real `v1.0.0 -> v2.1.1`; tambem retestar a oscilacao visual observada no teste de senha se ela reaparecer.
+- Próximo passo único: `Executar B00-B14 de upgrade real em baseline preservada para consolidar Go/No-Go; se reproduzivel, triagem separada da oscilacao visual no teste de senha.`
 
 ## Rotina de Atualização
 No início da sessão:

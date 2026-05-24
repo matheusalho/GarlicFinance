@@ -692,6 +692,12 @@ pub struct SettingsAutoImportSetInput {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SettingsImportBasePathSetInput {
+    pub base_path: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UiPreferencesV1 {
     pub theme: String,
     pub density: String,
@@ -725,6 +731,12 @@ pub struct FeatureFlagsV1 {
 #[serde(rename_all = "camelCase")]
 pub struct SettingsAutoImportResponse {
     pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingsImportBasePathResponse {
+    pub base_path: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

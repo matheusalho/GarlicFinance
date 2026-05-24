@@ -28,9 +28,10 @@ use crate::models::{
     RecurringTemplateItem, RecurringTemplateResponse, RuleDryRunItem, RuleListItem,
     RuleUpsertInput, RuleUpsertResponse, RulesDryRunResponse, SettingsAutoImportResponse,
     SettingsAutoImportSetInput, SettingsFeatureFlagsResponse, SettingsFeatureFlagsSetInput,
-    SettingsOnboardingResponse, SettingsOnboardingSetInput, SettingsPasswordSetInput,
-    SettingsPasswordStatusResponse, SettingsPasswordTestInput, SettingsPasswordTestResponse,
-    SettingsSimpleResponse, SettingsUiPreferencesResponse, SettingsUiPreferencesSetInput,
+    SettingsImportBasePathResponse, SettingsImportBasePathSetInput, SettingsOnboardingResponse,
+    SettingsOnboardingSetInput, SettingsPasswordSetInput, SettingsPasswordStatusResponse,
+    SettingsPasswordTestInput, SettingsPasswordTestResponse, SettingsSimpleResponse,
+    SettingsUiPreferencesResponse, SettingsUiPreferencesSetInput,
     SubcategoryDeleteInput, SubcategoryUpsertInput, SubcategoryUpsertResponse,
     TransactionDecisionInput, TransactionDecisionResponse, TransactionSuggestionItem,
     TransactionSuggestionsInput, TransactionSuggestionsResponse, TransactionsFilters,
@@ -1934,6 +1935,30 @@ pub fn settings_pick_import_base_path(
 }
 
 #[tauri::command]
+pub fn settings_import_base_path_get() -> Result<SettingsImportBasePathResponse, String> {
+    let conn = db::open_connection().map_err(|err| err.to_string())?;
+    db::init_database(&conn).map_err(|err| err.to_string())?;
+    Ok(SettingsImportBasePathResponse {
+        base_path: read_last_import_path(&conn).unwrap_or_default(),
+    })
+}
+
+#[tauri::command]
+pub fn settings_import_base_path_set(
+    input: SettingsImportBasePathSetInput,
+) -> Result<SettingsImportBasePathResponse, String> {
+    let conn = db::open_connection().map_err(|err| err.to_string())?;
+    db::init_database(&conn).map_err(|err| err.to_string())?;
+    let base_path = normalize_import_base_path_input(&input.base_path);
+    if base_path.is_empty() {
+        clear_last_import_path(&conn).map_err(|err| err.to_string())?;
+    } else {
+        save_last_import_path(&conn, &base_path).map_err(|err| err.to_string())?;
+    }
+    Ok(SettingsImportBasePathResponse { base_path })
+}
+
+#[tauri::command]
 pub fn settings_auto_import_set(
     input: SettingsAutoImportSetInput,
 ) -> Result<SettingsAutoImportResponse, String> {
@@ -2907,12 +2932,32 @@ fn save_last_import_path(conn: &Connection, base_path: &str) -> Result<()> {
     Ok(())
 }
 
+fn clear_last_import_path(conn: &Connection) -> Result<()> {
+    conn.execute("DELETE FROM app_settings WHERE key = 'last_import_path'", [])?;
+    Ok(())
+}
+
+fn normalize_import_base_path_input(base_path: &str) -> String {
+    base_path.trim().to_string()
+}
+
 fn read_last_import_path(conn: &Connection) -> Option<String> {
     let mut stmt = conn
         .prepare("SELECT value_json FROM app_settings WHERE key = 'last_import_path' LIMIT 1")
         .ok()?;
     let json_value: String = stmt.query_row([], |row| row.get(0)).ok()?;
-    serde_json::from_str::<String>(&json_value).ok()
+    serde_json::from_str::<String>(&json_value)
+        .ok()
+        .or_else(|| {
+            let trimmed = json_value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        })
+        .map(|value| normalize_import_base_path_input(&value))
+        .filter(|value| !value.is_empty())
 }
 
 #[derive(Clone)]
@@ -3756,6 +3801,31 @@ mod tests {
         let conn = Connection::open_in_memory().expect("failed to open sqlite");
         db::init_database(&conn).expect("failed to init database");
         conn
+    }
+
+    #[test]
+    fn import_base_path_helpers_roundtrip_json_and_legacy_raw_values() {
+        let conn = setup_conn();
+
+        save_last_import_path(&conn, r"C:\Projetos\GarlicFinance\ArquivosFinance")
+            .expect("path should save");
+        assert_eq!(
+            read_last_import_path(&conn).as_deref(),
+            Some(r"C:\Projetos\GarlicFinance\ArquivosFinance")
+        );
+
+        conn.execute(
+            "UPDATE app_settings SET value_json = ?1 WHERE key = 'last_import_path'",
+            params![r"C:\Legacy\ArquivosFinance"],
+        )
+        .expect("legacy raw path should be stored for compatibility test");
+        assert_eq!(
+            read_last_import_path(&conn).as_deref(),
+            Some(r"C:\Legacy\ArquivosFinance")
+        );
+
+        clear_last_import_path(&conn).expect("path should clear");
+        assert_eq!(read_last_import_path(&conn), None);
     }
 
     #[test]

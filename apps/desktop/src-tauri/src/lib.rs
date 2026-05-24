@@ -45,6 +45,8 @@ pub fn run() {
             commands::reconciliation_summary,
             commands::settings_auto_import_get,
             commands::settings_pick_import_base_path,
+            commands::settings_import_base_path_get,
+            commands::settings_import_base_path_set,
             commands::settings_auto_import_set,
             commands::settings_ui_preferences_get,
             commands::settings_ui_preferences_set,

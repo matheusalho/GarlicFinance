@@ -9,8 +9,8 @@ Ele deve ser suficiente para retomar o trabalho sem abrir o histórico detalhado
 - Ciclo ativo: `V2.1.x (hardening de publicação)`.
 - Estado do roadmap: `Sprint 1 = done`, `Sprint 2 = done`, `Sprint 3 = done`, `Sprint 4 = done`, `Sprint 5 = done`, `Sprint 6 = done`, `Sprint 7 = done`, `Sprint 8 = done`.
 - Sprint atual: `Task 0 — Release Proof And Baseline Integrity`.
-- Última entrega fechada: `Build do instalador 2.1.1 e limpeza local para instalação limpa`.
-- Próximo passo único: `Instalar o MSI GarlicFinance_2.1.1_x64_en-US.msi recém-gerado, abrir o app e validar que a experiência inicia limpa, sem dados históricos importados`.
+- Última entrega fechada: `Validação humana assistida 2.1.1 e correção dos bloqueios A12/A20/A21`.
+- Próximo passo único: `Executar B00-B14 de upgrade real v1.0.0 -> v2.1.1 em baseline preservada para consolidar Go/No-Go; retestar a oscilação visual do teste de senha apenas se reproduzível`.
 - Diretriz obrigatória: `legacy` congelado funcionalmente e sem dependência de runtime na trilha V2 publicada.
 
 ## O que Já Está Consolidado na V2
@@ -40,6 +40,10 @@ Ele deve ser suficiente para retomar o trabalho sem abrir o histórico detalhado
 - A próxima fronteira funcional da V2 está na validação humana final em cenário de usuário novo e upgrade real, fora do ambiente de automação; o roteiro e o scaffold de evidência já estão alinhados ao MSI `2.1.1`.
 - Fechar decisão de Go/No-Go para GA com evidência operacional da execução em máquina alvo de distribuição.
 - A limpeza local de 05/05 removeu `%APPDATA%\GarlicFinance`, `%LOCALAPPDATA%\com.garlicfinance.desktop`, `%LOCALAPPDATA%\GarlicFinance` e a credencial `GarlicFinance:btg`; após instalar o MSI, validar primeira abertura sem transações importadas.
+- A validação parcial de 05/05 instalou o MSI, abriu o app instalado e salvou screenshots em `output/manual-validation/v2.1.1/2026-05-05/`; o banco novo ficou sem transações/importações, mas a credencial Windows `GarlicFinance:btg` reapareceu e exige validação humana consciente.
+- A validação assistida de 23/05 usou dados de teste autorizados e salvou screenshots em `output/manual-validation/v2.1.1/2026-05-23/`; senha BTG, categorização individual, regra, lote, planejamento, restart e responsividade passaram parcialmente; o bloqueio de pasta base/reimportação foi corrigido em seguida e revalidado em `output/manual-validation/v2.1.1/2026-05-23-fix/`.
+- A correção de 23/05 adicionou contrato Tauri dedicado para persistir/hidratar pasta base (`settings_import_base_path_get/set`), recompilou o MSI `2.1.1` e validou nova execução no banco (`import_runs=2`, `import_run_files=90`, run #2 `noop` por ausência de novos lançamentos).
+- Retestar em rodada separada a oscilação visual observada no teste de senha se ela reaparecer; não foi tratada como bloqueio da importação.
 - Preservar baseline de upgrade separada da limpeza de `%AppData%\GarlicFinance`; a instalação limpa e o upgrade real não devem compartilhar o mesmo perfil sem snapshot/restauração.
 - O repositório continua com trilha de trabalho acumulada de sprints anteriores; não houve limpeza dessa trilha nesta sessão.
 - Para evoluir rumo a V2.2+ sem degradar velocidade, as fronteiras de arquitetura devem ser fatiadas antes de novas features grandes: `App.tsx`, `commands.rs`, `db.rs`, `SettingsTab`, `TransactionsTab` e `PlanningTab` concentram responsabilidades demais.
@@ -55,6 +59,8 @@ Ele deve ser suficiente para retomar o trabalho sem abrir o histórico detalhado
 - Evidência da sprint atual: `docs/EVIDENCIAS_V2_1_1_PREMIUM_POLISH_PUBLISH_GATE_2026-03-17.md`
 - Evidência de validação humana GA 2.1.1: `docs/EVIDENCIAS_VALIDACAO_HUMANA_GA_V2_1_1_2026-05-01.md`
 - Evidência de build/limpeza local 2.1.1: `docs/EVIDENCIAS_BUILD_INSTALADOR_E_LIMPEZA_LOCAL_V2_1_1_2026-05-05.md`
+- Evidência parcial de validação humana 2.1.1: `docs/EVIDENCIAS_VALIDACAO_HUMANA_PARCIAL_GA_V2_1_1_2026-05-05.md`
+- Evidência assistida de validação humana 2.1.1: `docs/EVIDENCIAS_VALIDACAO_HUMANA_ASSISTIDA_GA_V2_1_1_2026-05-23.md`
 - Plano mestre V2.2+: `docs/superpowers/plans/2026-05-01-best-personal-finance-app-roadmap.md`
 - Roteiro manual fechado GA: `docs/ROTEIRO_TESTE_MANUAL_FECHADO_GA_V2_0_0.md`
 - Evidências anteriores: `docs/EVIDENCIAS_SPRINT*_V2_0_*.md`
@@ -91,6 +97,9 @@ Ele deve ser suficiente para retomar o trabalho sem abrir o histórico detalhado
 | 17/03/2026 | EPIC RC-Final concluído para v2.1.1 | hardening de encoding/preflight/categorização/a11y aplicado; gates técnicos + `tauri:build` + `release:check:v2` aprovados; MSI `GarlicFinance_2.1.1_x64_en-US.msi` validado |
 | 01/05/2026 | Roadmap mestre best-in-market criado | plano `docs/superpowers/plans/2026-05-01-best-personal-finance-app-roadmap.md` decompõe release proof, arquitetura, command center, categorizaçao inteligente, orçamento/recorrências, net worth, importer registry, UX premium, insights e qualidade operacional |
 | 05/05/2026 | Instalador 2.1.1 regenerado e limpeza local executada | `tauri:build` e `release:check:v2` passaram; MSI `GarlicFinance_2.1.1_x64_en-US.msi` foi atualizado; dados locais e credencial BTG foram removidos para instalação limpa |
+| 05/05/2026 | Validação parcial com screenshots executada | MSI instalado, app aberto em instalação limpa, banco novo verificado sem transações/importações, capturas de Dashboard/Transações/Planejamento/Configurações/responsividade salvas; senha/importação/categorização/upgrade ficaram `HUMAN_REQUIRED` |
+| 23/05/2026 | Validação humana assistida com dados de teste executada | Senha BTG validada; categorização individual criou regra; lote atualizou 2 transações; Planejamento criou lançamento extraordinário, recorrência e projeção comparativa; restart e responsividade capturados; bloqueio de pasta base/reimportação identificado |
+| 23/05/2026 | Bloqueios A12/A20/A21 corrigidos | Pasta base passou a ser persistida/hidratada por contrato dedicado; app release recompilado mostrou setup com pasta base concluída e reimportação criou run #2 processando 45 arquivos |
 
 ## Checklist de Recuperação Rápida
 Uma leitura deste arquivo, do `AGENTS.md`, do roadmap e da matriz de flags deve permitir recuperar:
